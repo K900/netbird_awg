@@ -1,0 +1,140 @@
+diff --git a/conn/bind_std.go b/conn/bind_std.go
+index 6908ba8..80b20e3 100644
+--- a/conn/bind_std.go
++++ b/conn/bind_std.go
+@@ -46,6 +46,14 @@ type StdNetBind struct {
+ 
+ 	blackhole4 bool
+ 	blackhole6 bool
++
++	receiverCreator ReceiverCreator
++}
++
++func NewStdNetBindWithReceiverCreator(receiverCreator ReceiverCreator) *StdNetBind {
++	b, _ := NewStdNetBind().(*StdNetBind)
++	b.receiverCreator = receiverCreator
++	return b
+ }
+ 
+ func NewStdNetBind() Bind {
+@@ -179,7 +187,11 @@ again:
+ 			v4pc = ipv4.NewPacketConn(v4conn)
+ 			s.ipv4PC = v4pc
+ 		}
+-		fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, s.ipv4RxOffload))
++		if s.receiverCreator != nil {
++			fns = append(fns, s.receiverCreator.CreateReceiverFn(v4pc, v4conn, s.ipv4RxOffload, &s.msgsPool))
++		} else {
++			fns = append(fns, s.makeReceiveIPv4(v4pc, v4conn, s.ipv4RxOffload))
++		}
+ 		s.ipv4 = v4conn
+ 	}
+ 	if v6conn != nil {
+@@ -188,7 +200,11 @@ again:
+ 			v6pc = ipv6.NewPacketConn(v6conn)
+ 			s.ipv6PC = v6pc
+ 		}
+-		fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, s.ipv6RxOffload))
++		if s.receiverCreator != nil {
++			fns = append(fns, s.receiverCreator.CreateReceiverFn(v6pc, v6conn, s.ipv6RxOffload, &s.msgsPool))
++		} else {
++			fns = append(fns, s.makeReceiveIPv6(v6pc, v6conn, s.ipv6RxOffload))
++		}
+ 		s.ipv6 = v6conn
+ 	}
+ 	if len(fns) == 0 {
+diff --git a/conn/export.go b/conn/export.go
+new file mode 100644
+index 0000000..9c905cb
+--- /dev/null
++++ b/conn/export.go
+@@ -0,0 +1,18 @@
++package conn
++
++const (
++	UdpSegmentMaxDatagrams = udpSegmentMaxDatagrams
++)
++
++var (
++	SplitCoalescedMessages = splitCoalescedMessages
++	GetSrcFromControl      = getSrcFromControl
++
++	GetGSOSize = getGSOSize
++
++	// export controlFns for Android to use
++	// is not thread safe and should only be modified during init.
++	ControlFns = &controlFns
++)
++
++type BatchReader = batchReader
+diff --git a/conn/receiver_creator.go b/conn/receiver_creator.go
+new file mode 100644
+index 0000000..6fef567
+--- /dev/null
++++ b/conn/receiver_creator.go
+@@ -0,0 +1,10 @@
++package conn
++
++import (
++	"net"
++	"sync"
++)
++
++type ReceiverCreator interface {
++	CreateReceiverFn(pc BatchReader, conn *net.UDPConn, rxOffload bool, msgPool *sync.Pool) ReceiveFunc
++}
+diff --git a/device/device.go b/device/device.go
+index 2fdf85c..96a6483 100644
+--- a/device/device.go
++++ b/device/device.go
+@@ -6,6 +6,9 @@
+ package device
+ 
+ import (
++	"errors"
++	"fmt"
++	"net"
+ 	"runtime"
+ 	"sync"
+ 	"sync/atomic"
+@@ -562,3 +565,27 @@ func (device *Device) BindClose() error {
+ 	device.net.Unlock()
+ 	return err
+ }
++
++// CreateOutboundPacket creates and routes a packet to the appropriate peer
++func (device *Device) CreateOutboundPacket(payload []byte, dstIP net.IP) error {
++	peer := device.allowedips.Lookup(dstIP)
++	if peer == nil {
++		return fmt.Errorf("no peer found for IP %v", dstIP)
++	}
++	if !peer.isRunning.Load() {
++		return errors.New("peer not running")
++	}
++
++	elem := device.GetOutboundElement()
++	elem.buffer = device.GetMessageBuffer()
++
++	copy(elem.buffer[MessageTransportOffsetContent:], payload)
++	elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(payload)]
++
++	container := device.GetOutboundElementsContainer()
++	container.elems = append(container.elems, elem)
++
++	peer.StagePackets(container)
++	peer.SendStagedPackets()
++	return nil
++}
+diff --git a/device/queueconstants_windows.go b/device/queueconstants_windows.go
+index 9a296d6..425b2ea 100644
+--- a/device/queueconstants_windows.go
++++ b/device/queueconstants_windows.go
+@@ -10,6 +10,6 @@ const (
+ 	QueueOutboundSize          = 1024
+ 	QueueInboundSize           = 1024
+ 	QueueHandshakeSize         = 1024
+-	MaxSegmentSize             = 2048 - 32 // largest possible UDP datagram
+-	PreallocatedBuffersPerPool = 0         // Disable and allow for infinite memory growth
++	MaxSegmentSize             = 65535 // Match with WINTUN_MAX_IP_PACKET_SIZE macro definition
++	PreallocatedBuffersPerPool = 0     // Disable and allow for infinite memory growth
+ )
