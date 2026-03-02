@@ -180,8 +180,25 @@ jobs:
       - name: Clone sources
         run: ./scripts/clone_sources.sh
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ github.workspace }}/workdir/repos/netbird/go.mod
+          cache: true
+          cache-dependency-path: |
+            ${{ github.workspace }}/workdir/repos/netbird/go.mod
+            ${{ github.workspace }}/workdir/repos/netbird/go.sum
+
       - name: Prepare sources
         run: ./scripts/prepare_sources.sh
+
+      - name: Build netbird-server binary
+        run: |
+          cd "$GITHUB_WORKSPACE/workdir/repos/netbird"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/netbirdio/netbird/version.version=${NETBIRD_RELEASE_TAG} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.builtBy=github-actions" \
+            -o netbird-server ./combined
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -196,7 +213,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ github.workspace }}/workdir/repos/netbird
-          file: ${{ github.workspace }}/workdir/repos/netbird/combined/Dockerfile.multistage
+          file: ${{ github.workspace }}/workdir/repos/netbird/combined/Dockerfile
           platforms: linux/amd64
           tags: |
             spikeyspik/netbird_awg_server:${{ env.NETBIRD_RELEASE_TAG }}
