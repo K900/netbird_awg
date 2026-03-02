@@ -53,7 +53,7 @@ jobs:
           sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - name: Prepare sources
-        run: SKIP_CLONE=1 ./scripts/prepare_sources.sh
+        run: ./scripts/prepare_sources.sh
 
       - name: Prepare release tag in source tree
         if: ${{ env.RELEASE_MODE == 'true' }}
@@ -139,7 +139,7 @@ jobs:
 
       - name: Prepare sources
         shell: bash
-        run: SKIP_CLONE=1 ./scripts/prepare_sources.sh
+        run: ./scripts/prepare_sources.sh
 
       - name: Build ui binary
         uses: goreleaser/goreleaser-action@v6
@@ -192,7 +192,7 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
       - name: Prepare sources
-        run: SKIP_CLONE=1 ./scripts/prepare_sources.sh
+        run: ./scripts/prepare_sources.sh
 
       - name: Build ui binaries
         uses: goreleaser/goreleaser-action@v6

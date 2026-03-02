@@ -129,7 +129,7 @@ jobs:
         run: ./scripts/clone_sources.sh
 
       - name: Prepare sources
-        run: SKIP_CLONE=1 ./scripts/prepare_sources.sh
+        run: ./scripts/prepare_sources.sh
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -189,7 +189,7 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
       - name: Prepare sources
-        run: SKIP_CLONE=1 ./scripts/prepare_sources.sh
+        run: ./scripts/prepare_sources.sh
 
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3

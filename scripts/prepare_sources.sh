@@ -7,12 +7,6 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/version_vars.sh"
 
-SKIP_CLONE="${SKIP_CLONE:-0}"
-
-if [[ "$SKIP_CLONE" != "1" ]]; then
-  "$SCRIPT_DIR/clone_sources.sh"
-fi
-
 "$SCRIPT_DIR/apply_patches.sh"
 "$SCRIPT_DIR/replace_imports.sh"
 "$SCRIPT_DIR/set_netbird_version.sh"
