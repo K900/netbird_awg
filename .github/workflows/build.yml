@@ -52,6 +52,11 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.mod
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
+      - name: Install cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
       - name: Detect build parallelism
         id: parallelism
         run: echo "value=$(nproc)" >> "$GITHUB_OUTPUT"
@@ -89,6 +94,15 @@ jobs:
     steps:
       - name: Checkout pipeline repository
         uses: actions/checkout@v4
+
+      - name: Configure Git line endings for patches
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git -C "$GITHUB_WORKSPACE" config core.autocrlf false
+          git -C "$GITHUB_WORKSPACE" reset --hard HEAD
+          git -C "$GITHUB_WORKSPACE" clean -fd
 
       - name: Resolve version variables
         shell: bash
@@ -229,6 +243,11 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.mod
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
+      - name: Install cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
       - name: Detect build parallelism
         id: parallelism
         run: echo "value=$(nproc)" >> "$GITHUB_OUTPUT"
@@ -263,6 +282,15 @@ jobs:
     steps:
       - name: Checkout pipeline repository
         uses: actions/checkout@v4
+
+      - name: Configure Git line endings for patches
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git -C "$GITHUB_WORKSPACE" config core.autocrlf false
+          git -C "$GITHUB_WORKSPACE" reset --hard HEAD
+          git -C "$GITHUB_WORKSPACE" clean -fd
 
       - name: Resolve version variables
         shell: bash
