@@ -35,8 +35,7 @@ while IFS= read -r raw_line; do
   fi
 done < "$CONFIG_FILE"
 
-AWG_VERSION_SUFFIX="${AWG_VERSION_SUFFIX:--awg}"
-AWG_REVISION="${AWG_REVISION:-r1}"
+AWG_VERSION_SUFFIX="${AWG_VERSION_SUFFIX:-awg.r1}"
 
 if [[ -n "${BASE_TAG:-}" ]]; then
   NETBIRD_BASE_TAG="$BASE_TAG"
@@ -53,41 +52,34 @@ fi
 
 NETBIRD_REF="${NETBIRD_REF:-$NETBIRD_BASE_TAG}"
 
-revision_part=""
-if [[ -n "$AWG_REVISION" ]]; then
-  if [[ "$AWG_REVISION" == -* ]]; then
-    revision_part="$AWG_REVISION"
-  else
-    revision_part="-$AWG_REVISION"
-  fi
-fi
-
 if [[ "$NETBIRD_BASE_TAG" == *"$AWG_VERSION_SUFFIX"* ]]; then
   computed_release_tag="$NETBIRD_BASE_TAG"
 else
-  computed_release_tag="${NETBIRD_BASE_TAG}${AWG_VERSION_SUFFIX}"
-fi
-
-if [[ -n "$revision_part" && "$computed_release_tag" != *"$revision_part" ]]; then
-  computed_release_tag="${computed_release_tag}${revision_part}"
+  if [[ "$AWG_VERSION_SUFFIX" == [-.+]* ]]; then
+    computed_release_tag="${NETBIRD_BASE_TAG}${AWG_VERSION_SUFFIX}"
+  else
+    computed_release_tag="${NETBIRD_BASE_TAG}-${AWG_VERSION_SUFFIX}"
+  fi
 fi
 
 NETBIRD_RELEASE_TAG="${NETBIRD_RELEASE_TAG:-$computed_release_tag}"
+NETBIRD_PACKAGE_VERSION="${NETBIRD_RELEASE_TAG#v}"
+NETBIRD_PACKAGE_VERSION="${NETBIRD_PACKAGE_VERSION//-/.}"
 
 export CONFIG_FILE
 export NETBIRD_BASE_TAG
 export NETBIRD_REF
 export NETBIRD_RELEASE_TAG
+export NETBIRD_PACKAGE_VERSION
 export AWG_VERSION_SUFFIX
-export AWG_REVISION
 
 print_key_values() {
   cat <<VARS
 NETBIRD_BASE_TAG=$NETBIRD_BASE_TAG
 NETBIRD_REF=$NETBIRD_REF
 NETBIRD_RELEASE_TAG=$NETBIRD_RELEASE_TAG
+NETBIRD_PACKAGE_VERSION=$NETBIRD_PACKAGE_VERSION
 AWG_VERSION_SUFFIX=$AWG_VERSION_SUFFIX
-AWG_REVISION=$AWG_REVISION
 VARS
 }
 

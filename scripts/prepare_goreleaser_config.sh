@@ -328,6 +328,17 @@ def ensure_release_overwrite(block_lines):
     return out
 
 
+def ensure_nfpms_version_template(item_lines):
+    version_line = "    version_template: \"{{ .Env.NETBIRD_PACKAGE_VERSION }}\"\n"
+    out = [item_lines[0]]
+    out.append(version_line)
+    for line in item_lines[1:]:
+        if re.match(r"^    version_template:\s*", line):
+            continue
+        out.append(line)
+    return out
+
+
 root_sections = split_sections(root_src)
 ui_sections = split_sections(ui_src)
 
@@ -341,6 +352,7 @@ merged_archives = netbird_binary_archives_block()
 root_nfpms = filter_block_by_build_refs(root_sections.get("nfpms", []), root_build_ids)
 ui_nfpms = []
 merged_nfpms = merge_list_blocks(root_nfpms, ui_nfpms)
+merged_nfpms = map_items(merged_nfpms, ensure_nfpms_version_template)
 
 universal_binaries = filter_block_by_ids(root_sections.get("universal_binaries", []), allowed_universal_ids)
 
