@@ -52,10 +52,17 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.mod
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
+      - name: Setup .NET SDK (for WiX)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Install windows installer dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64 nsis
+          dotnet tool install --global wix --version 5.*
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Detect build parallelism
         id: parallelism
@@ -77,6 +84,9 @@ jobs:
 
       - name: Build windows installer (.exe)
         run: ./scripts/build_windows_installer.sh
+
+      - name: Build windows installer (.msi)
+        run: ./scripts/build_windows_msi.sh
 
       - name: Upload snapshot artifacts
         uses: actions/upload-artifact@v4
@@ -172,10 +182,17 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/go.mod
             ${{ github.workspace }}/workdir/repos/netbird/go.sum
 
+      - name: Setup .NET SDK (for WiX)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Install windows installer dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64 nsis
+          dotnet tool install --global wix --version 5.*
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Detect build parallelism
         id: parallelism
@@ -201,13 +218,16 @@ jobs:
       - name: Build windows installer (.exe)
         run: ./scripts/build_windows_installer.sh
 
+      - name: Build windows installer (.msi)
+        run: ./scripts/build_windows_msi.sh
+
       - name: Upload windows installer to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd "$GITHUB_WORKSPACE/workdir/repos/netbird/dist"
           shopt -s nullglob
-          files=(netbird_installer_*_windows_amd64.exe)
+          files=(netbird_installer_*_windows_amd64.exe netbird_installer_*_windows_amd64.msi)
           if [[ "${#files[@]}" -eq 0 ]]; then
             echo "[error] no windows installer found in dist/"
             find . -maxdepth 2 -type f | sort
