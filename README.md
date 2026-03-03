@@ -49,7 +49,7 @@ NETBIRD_AMNEZIA_I5=
   AmneziaWG or
   vanilla WireGuard, not both.
 - After changing AmneziaWG settings, clients must reconnect once (`netbird down && netbird up`).
-- This is a side project. Updates may lag behind official NetBird releases.
+- This is a side project. Updates may lag behind official NetBird releases. Bugs may present.
 - Auto-update works.
 - Mobile clients are not supported.
 - PRs are always welcome.
