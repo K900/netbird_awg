@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -85,14 +87,14 @@ func main() {
 		fmt.Printf("  ... and %d more\n", len(changed)-limit)
 	}
 
-	checkedPNG, changedPNG, err := recolorPNGIcons(cfg)
+	checkedIcons, changedIcons, err := recolorIconFiles(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[error] png recolor failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[error] icon recolor failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("[branding] checked png icons: %d\n", checkedPNG)
-	fmt.Printf("[branding] changed png icons: %d\n", changedPNG)
+	fmt.Printf("[branding] checked icon files: %d\n", checkedIcons)
+	fmt.Printf("[branding] changed icon files: %d\n", changedIcons)
 }
 
 func parseFlags() (*brandingConfig, error) {
@@ -274,7 +276,7 @@ func looksUIRelated(path string) bool {
 	return false
 }
 
-func recolorPNGIcons(cfg *brandingConfig) (int, int, error) {
+func recolorIconFiles(cfg *brandingConfig) (int, int, error) {
 	targetR, targetG, targetB := mustHexColor(cfg.targetHex)
 	targetHue, _, _ := rgbToHSV(targetR, targetG, targetB)
 
@@ -288,14 +290,24 @@ func recolorPNGIcons(cfg *brandingConfig) (int, int, error) {
 		if info.IsDir() {
 			return nil
 		}
-		if strings.ToLower(filepath.Ext(path)) != ".png" {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".png" && ext != ".ico" {
 			return nil
 		}
 		if !pathLooksLikeIcon(path) {
 			return nil
 		}
 		checked++
-		ok, err := recolorPNG(path, targetHue)
+		var (
+			ok  bool
+			err error
+		)
+		switch ext {
+		case ".png":
+			ok, err = recolorPNG(path, targetHue)
+		case ".ico":
+			ok, err = recolorICO(path, targetHue)
+		}
 		if err != nil {
 			return nil
 		}
@@ -409,6 +421,30 @@ func recolorPNG(path string, targetHue float64) (bool, error) {
 		return false, err
 	}
 
+	dst, changed := recolorImage(img, targetHue)
+	if !changed {
+		return false, nil
+	}
+
+	tmpPath := path + ".tmp"
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return false, err
+	}
+	if err := png.Encode(out, dst); err != nil {
+		_ = out.Close()
+		return false, err
+	}
+	if err := out.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func recolorImage(img image.Image, targetHue float64) (*image.RGBA, bool) {
 	bounds := img.Bounds()
 	dst := image.NewRGBA(bounds)
 	changed := false
@@ -443,27 +479,195 @@ func recolorPNG(path string, targetHue float64) (bool, error) {
 			}
 		}
 	}
+	return dst, changed
+}
 
+func recolorICO(path string, targetHue float64) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+
+	updated, changed, err := recolorICOData(data, targetHue)
+	if err != nil {
+		return false, err
+	}
 	if !changed {
 		return false, nil
 	}
 
-	tmpPath := path + ".tmp"
-	out, err := os.Create(tmpPath)
+	info, err := os.Stat(path)
 	if err != nil {
 		return false, err
 	}
-	if err := png.Encode(out, dst); err != nil {
-		_ = out.Close()
-		return false, err
-	}
-	if err := out.Close(); err != nil {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, updated, info.Mode().Perm()); err != nil {
 		return false, err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func recolorICOData(data []byte, targetHue float64) ([]byte, bool, error) {
+	if len(data) < 6 {
+		return nil, false, fmt.Errorf("ico file is too short")
+	}
+	if binary.LittleEndian.Uint16(data[0:2]) != 0 || binary.LittleEndian.Uint16(data[2:4]) != 1 {
+		return data, false, nil
+	}
+
+	count := int(binary.LittleEndian.Uint16(data[4:6]))
+	if count <= 0 {
+		return data, false, nil
+	}
+	dirEnd := 6 + count*16
+	if len(data) < dirEnd {
+		return nil, false, fmt.Errorf("invalid ico directory")
+	}
+
+	type frame struct {
+		entry [8]byte
+		data  []byte
+	}
+	frames := make([]frame, count)
+	changedAny := false
+
+	for i := 0; i < count; i++ {
+		entryOff := 6 + i*16
+		copy(frames[i].entry[:], data[entryOff:entryOff+8])
+
+		size := int(binary.LittleEndian.Uint32(data[entryOff+8 : entryOff+12]))
+		offset := int(binary.LittleEndian.Uint32(data[entryOff+12 : entryOff+16]))
+		if size <= 0 || offset < dirEnd || offset+size > len(data) {
+			return nil, false, fmt.Errorf("invalid ico frame at index %d", i)
+		}
+
+		original := append([]byte(nil), data[offset:offset+size]...)
+		updated, changed, err := recolorICOFrame(original, targetHue)
+		if err != nil {
+			return nil, false, err
+		}
+		frames[i].data = updated
+		if changed {
+			changedAny = true
+		}
+	}
+
+	if !changedAny {
+		return data, false, nil
+	}
+
+	out := make([]byte, dirEnd)
+	copy(out[:6], data[:6])
+	cursor := dirEnd
+	for i := 0; i < count; i++ {
+		entryOff := 6 + i*16
+		copy(out[entryOff:entryOff+8], frames[i].entry[:])
+		binary.LittleEndian.PutUint32(out[entryOff+8:entryOff+12], uint32(len(frames[i].data)))
+		binary.LittleEndian.PutUint32(out[entryOff+12:entryOff+16], uint32(cursor))
+		cursor += len(frames[i].data)
+	}
+	for i := 0; i < count; i++ {
+		out = append(out, frames[i].data...)
+	}
+
+	return out, true, nil
+}
+
+func recolorICOFrame(frame []byte, targetHue float64) ([]byte, bool, error) {
+	const dibHeaderSize = 40
+
+	pngHeader := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	if len(frame) >= len(pngHeader) && bytes.Equal(frame[:len(pngHeader)], pngHeader) {
+		img, err := png.Decode(bytes.NewReader(frame))
+		if err != nil {
+			return frame, false, nil
+		}
+		dst, changed := recolorImage(img, targetHue)
+		if !changed {
+			return frame, false, nil
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, dst); err != nil {
+			return nil, false, err
+		}
+		return buf.Bytes(), true, nil
+	}
+
+	if len(frame) < dibHeaderSize {
+		return frame, false, nil
+	}
+	headerSize := int(binary.LittleEndian.Uint32(frame[0:4]))
+	if headerSize < dibHeaderSize || headerSize > len(frame) {
+		return frame, false, nil
+	}
+
+	width := int(int32(binary.LittleEndian.Uint32(frame[4:8])))
+	heightField := int(int32(binary.LittleEndian.Uint32(frame[8:12])))
+	bitCount := int(binary.LittleEndian.Uint16(frame[14:16]))
+	compression := binary.LittleEndian.Uint32(frame[16:20])
+
+	if width == 0 || heightField == 0 || bitCount != 32 || compression != 0 {
+		return frame, false, nil
+	}
+
+	widthAbs := absInt(width)
+	heightAbs := absInt(heightField)
+	height := heightAbs / 2
+	if height == 0 {
+		return frame, false, nil
+	}
+
+	rowStride := ((widthAbs*bitCount + 31) / 32) * 4
+	pixelOffset := headerSize
+	pixelDataLen := rowStride * height
+	if pixelOffset+pixelDataLen > len(frame) {
+		return frame, false, nil
+	}
+
+	out := append([]byte(nil), frame...)
+	changed := false
+
+	for y := 0; y < height; y++ {
+		// DIB in ICO is usually bottom-up.
+		row := y
+		if heightField > 0 {
+			row = height - 1 - y
+		}
+		rowOffset := pixelOffset + row*rowStride
+		for x := 0; x < widthAbs; x++ {
+			i := rowOffset + x*4
+			b := out[i]
+			g := out[i+1]
+			r := out[i+2]
+			a := out[i+3]
+			if a == 0 {
+				continue
+			}
+
+			h, s, v := rgbToHSV(float64(r)/255.0, float64(g)/255.0, float64(b)/255.0)
+			if !isOrange(h, s, v) {
+				continue
+			}
+
+			nr, ng, nb := hsvToRGB(targetHue, s, v)
+			out[i] = clamp255(nb)
+			out[i+1] = clamp255(ng)
+			out[i+2] = clamp255(nr)
+			changed = true
+		}
+	}
+
+	return out, changed, nil
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func pathLooksLikeIcon(path string) bool {
