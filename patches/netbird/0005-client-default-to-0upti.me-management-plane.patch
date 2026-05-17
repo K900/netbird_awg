@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: K900 <me@0upti.me>
+Date: Sun, 17 May 2026 15:26:27 +0300
+Subject: [PATCH] client: default to 0upti.me management plane
+
+
+diff --git a/client/internal/profilemanager/config.go b/client/internal/profilemanager/config.go
+index cd5bc0680..461ddd151 100644
+--- a/client/internal/profilemanager/config.go
++++ b/client/internal/profilemanager/config.go
+@@ -33,11 +33,11 @@ const (
+ 	// It is used for backward compatibility now.
+ 	managementLegacyPortString = "33073"
+ 	// DefaultManagementURL points to the NetBird's cloud management endpoint
+-	DefaultManagementURL = "https://api.netbird.io:443"
++	DefaultManagementURL = "https://nb.0upti.me:443"
+ 	// oldDefaultManagementURL points to the NetBird's old cloud management endpoint
+ 	oldDefaultManagementURL = "https://api.wiretrustee.com:443"
+ 	// DefaultAdminURL points to NetBird's cloud management console
+-	DefaultAdminURL = "https://app.netbird.io:443"
++	DefaultAdminURL = "https://nb.0upti.me:443"
+ )
+ 
+ // mgmProber is the subset of management client needed for URL migration probes.

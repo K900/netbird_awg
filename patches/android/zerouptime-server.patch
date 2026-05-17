@@ -1,0 +1,21 @@
+diff --git a/tool/src/main/java/io/netbird/client/tool/Preferences.java b/tool/src/main/java/io/netbird/client/tool/Preferences.java
+index ddf57ca..87b0c26 100644
+--- a/tool/src/main/java/io/netbird/client/tool/Preferences.java
++++ b/tool/src/main/java/io/netbird/client/tool/Preferences.java
+@@ -27,7 +27,7 @@ public class Preferences {
+     }
+ 
+     public boolean isConnectionForceRelayed() {
+-        return sharedPref.getBoolean(keyForceRelayConnection, true);
++        return sharedPref.getBoolean(keyForceRelayConnection, false);
+     }
+ 
+     public void enableForcedRelayConnection() {
+@@ -39,6 +39,6 @@ public class Preferences {
+     }
+ 
+     public static String defaultServer() {
+-        return "https://api.netbird.io";
++        return "https://nb.0upti.me";
+     }
+ }
