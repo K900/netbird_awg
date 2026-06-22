@@ -54,12 +54,52 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v3.0.0
+        with:
+          version: 11
+
+      # wails3 CLI links against GTK4 / WebKitGTK 6.0 via its internal/operatingsystem
+      # package, so the dev libraries must be present before `go install`.
+      - name: Install Wails Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev
+
       - name: Prepare sources
         run: ./scripts/prepare_sources.sh
 
       - name: Prepare release tag in source tree
         if: ${{ env.RELEASE_MODE == 'true' }}
         run: ./scripts/prepare_netbird_release_git.sh
+
+      - name: Install wails3 CLI
+        # Version derived from go.mod so the binding generator always matches
+        # the wails runtime the daemon links against.
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird
+        run: |
+          WAILS_VERSION=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          go install github.com/wailsapp/wails/v3/cmd/wails3@$WAILS_VERSION
+
+      - name: Install UI dependencies
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Wails bindings
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm run bindings
+
+      - name: Build UI
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm build
 
       - name: Build (release local)
         if: ${{ env.RELEASE_MODE == 'true' }}
@@ -275,15 +315,55 @@ jobs:
       - name: Install goversioninfo
         run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@233067e
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v3.0.0
+        with:
+          version: 11
+
       - name: Prepare sources
         shell: bash
         run: ./scripts/prepare_sources.sh
 
+      - name: Install wails3 CLI
+        # Version derived from go.mod so the binding generator always matches
+        # the wails runtime the daemon links against.
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird
+        shell: bash
+        run: |
+          WAILS_VERSION=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          go install github.com/wailsapp/wails/v3/cmd/wails3@$WAILS_VERSION
+
+      - name: Stage WebView2 bootstrapper for installers
+        # Both client/installer.nsis and client/netbird.wxs reference
+        # client/MicrosoftEdgeWebview2Setup.exe. wails3 writes it there.
+        # The signing pipeline (netbirdio/sign-pipelines) does the same
+        # step for release builds; this mirrors it for PR sanity testing.
+        shell: bash
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird
+        run: wails3 generate webview2bootstrapper -dir client
+
+      - name: Install UI dependencies
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Wails bindings
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm run bindings
+
+      - name: Build UI
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm build
+
       - name: Generate Windows assets
         working-directory: ${{ github.workspace }}/workdir/repos/netbird
         run: |
-          goversioninfo -icon client/ui/assets/netbird.ico -manifest client/manifest.xml -product-name "${{ env.PRODUCT_NAME }}" -copyright "${{ env.COPYRIGHT }}" -ver-major ${{ steps.semver_parser.outputs.major }} -ver-minor ${{ steps.semver_parser.outputs.minor }} -ver-patch ${{ steps.semver_parser.outputs.patch }} -ver-build 0 -file-version ${{ steps.semver_parser.outputs.fullversion }}.0 -product-version ${{ steps.semver_parser.outputs.fullversion }}.0 -o client/resources_windows_amd64.syso
-          goversioninfo -64 -icon client/ui/assets/netbird.ico -manifest client/ui/manifest.xml -product-name "${{ env.PRODUCT_NAME }}-UI" -copyright "${{ env.COPYRIGHT }}" -ver-major ${{ steps.semver_parser.outputs.major }} -ver-minor ${{ steps.semver_parser.outputs.minor }} -ver-patch ${{ steps.semver_parser.outputs.patch }} -ver-build 0 -file-version ${{ steps.semver_parser.outputs.fullversion }}.0 -product-version ${{ steps.semver_parser.outputs.fullversion }}.0 -o client/ui/resources_windows_amd64.syso
+          goversioninfo -icon client/ui/build/windows/icon.ico -manifest client/manifest.xml -product-name "${{ env.PRODUCT_NAME }}" -copyright "${{ env.COPYRIGHT }}" -ver-major ${{ steps.semver_parser.outputs.major }} -ver-minor ${{ steps.semver_parser.outputs.minor }} -ver-patch ${{ steps.semver_parser.outputs.patch }} -ver-build 0 -file-version ${{ steps.semver_parser.outputs.fullversion }}.0 -product-version ${{ steps.semver_parser.outputs.fullversion }}.0 -o client/resources_windows_amd64.syso
+          goversioninfo -64 -icon client/ui/build/windows/icon.ico -manifest client/manifest.xml -product-name "${{ env.PRODUCT_NAME }}-UI" -copyright "${{ env.COPYRIGHT }}" -ver-major ${{ steps.semver_parser.outputs.major }} -ver-minor ${{ steps.semver_parser.outputs.minor }} -ver-patch ${{ steps.semver_parser.outputs.patch }} -ver-build 0 -file-version ${{ steps.semver_parser.outputs.fullversion }}.0 -product-version ${{ steps.semver_parser.outputs.fullversion }}.0 -o client/ui/resources_windows_amd64.syso
       - name: Build Windows binaries
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -339,8 +419,38 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v3.0.0
+        with:
+          version: 11
+
       - name: Prepare sources
         run: ./scripts/prepare_sources.sh
+
+      - name: Install wails3 CLI
+        # Version derived from go.mod so the binding generator always matches
+        # the wails runtime the daemon links against.
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird
+        run: |
+          WAILS_VERSION=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          go install github.com/wailsapp/wails/v3/cmd/wails3@$WAILS_VERSION
+
+      - name: Install UI dependencies
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Wails bindings
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm run bindings
+
+      - name: Build UI
+        working-directory: ${{ github.workspace }}/workdir/repos/netbird/client/ui/frontend
+        run: pnpm build
 
       - name: Build darwin binaries
         uses: goreleaser/goreleaser-action@v6
