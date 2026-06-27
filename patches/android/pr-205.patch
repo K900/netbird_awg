@@ -1,0 +1,800 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index febc2632..14273628 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -71,13 +71,15 @@ android {
+ dependencies {
+     implementation(project(":tool"))
+     implementation(project(":gomobile"))
++    implementation(libs.androidx.navigation.fragment)
++    implementation(libs.androidx.navigation.ui)
+     implementation(libs.appcompat)
+     implementation(libs.material)
+     implementation(libs.constraintlayout)
+     implementation(libs.lifecycle.livedata.ktx)
+     implementation(libs.lifecycle.viewmodel.ktx)
+-    implementation(libs.navigation.fragment)
+-    implementation(libs.navigation.ui)
++    implementation(libs.androidx.fragment)
++    implementation(libs.androidx.recyclerview)
+     testImplementation(libs.junit)
+     androidTestImplementation(libs.ext.junit)
+     androidTestImplementation(libs.espresso.core)
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 897d5fdf..5e8076da 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -18,6 +18,20 @@
+         android:name="android.hardware.touchscreen"
+         android:required="false" />
+ 
++    <queries>
++        <!-- Apps with launcher icons - what users typically want to select -->
++        <intent>
++            <action android:name="android.intent.action.MAIN" />
++            <category android:name="android.intent.category.LAUNCHER" />
++        </intent>
++
++        <!-- Browser apps (common split-tunneling target) -->
++        <intent>
++            <action android:name="android.intent.action.VIEW" />
++            <data android:scheme="https" />
++        </intent>
++    </queries>
++
+     <application
+         android:name=".MyApplication"
+         android:allowBackup="false"
+diff --git a/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java b/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
+index 212fed94..2d6b9a15 100644
+--- a/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
++++ b/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
+@@ -15,6 +15,8 @@
+ import androidx.appcompat.app.AlertDialog;
+ import androidx.appcompat.app.AppCompatDelegate;
+ import androidx.fragment.app.Fragment;
++import androidx.navigation.NavController;
++import androidx.navigation.Navigation;
+ 
+ import io.netbird.client.R;
+ import io.netbird.client.databinding.ComponentSwitchBinding;
+@@ -185,6 +187,11 @@ public View onCreateView(@NonNull LayoutInflater inflater,
+             AppCompatDelegate.setDefaultNightMode(mode);
+         });
+ 
++        binding.layoutSplitTunneling.setOnClickListener(v -> {
++            NavController navController = Navigation.findNavController(v);
++            navController.navigate(R.id.nav_split_tunneling);
++        });
++
+         return root;
+     }
+ 
+diff --git a/app/src/main/java/io/netbird/client/ui/splittunneling/AppInfo.java b/app/src/main/java/io/netbird/client/ui/splittunneling/AppInfo.java
+new file mode 100644
+index 00000000..97e5e75e
+--- /dev/null
++++ b/app/src/main/java/io/netbird/client/ui/splittunneling/AppInfo.java
+@@ -0,0 +1,17 @@
++package io.netbird.client.ui.splittunneling;
++
++import android.graphics.drawable.Drawable;
++
++public class AppInfo {
++    public final String name;
++    public final String packageName;
++    public final Drawable icon;
++    public boolean isSelected;
++
++    public AppInfo(String name, String packageName, Drawable icon, boolean isSelected) {
++        this.name = name;
++        this.packageName = packageName;
++        this.icon = icon;
++        this.isSelected = isSelected;
++    }
++}
+diff --git a/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingAdapter.java b/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingAdapter.java
+new file mode 100644
+index 00000000..0c029caf
+--- /dev/null
++++ b/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingAdapter.java
+@@ -0,0 +1,87 @@
++package io.netbird.client.ui.splittunneling;
++
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.CheckBox;
++import android.widget.ImageView;
++import android.widget.TextView;
++
++import androidx.annotation.NonNull;
++import androidx.recyclerview.widget.RecyclerView;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.stream.Collectors;
++
++import io.netbird.client.R;
++
++public class SplitTunnelingAdapter extends RecyclerView.Adapter<SplitTunnelingAdapter.ViewHolder> {
++
++    private List<AppInfo> allApps = new ArrayList<>();
++    private List<AppInfo> filteredApps = new ArrayList<>();
++    private final OnAppClickListener listener;
++
++    public interface OnAppClickListener {
++        void onAppClick(AppInfo app);
++    }
++
++    public SplitTunnelingAdapter(OnAppClickListener listener) {
++        this.listener = listener;
++    }
++
++    public void setApps(List<AppInfo> apps) {
++        this.allApps = apps;
++        this.filteredApps = new ArrayList<>(apps);
++        notifyDataSetChanged();
++    }
++
++    public void filter(String query) {
++        if (query.isEmpty()) {
++            filteredApps = new ArrayList<>(allApps);
++        } else {
++            String lowerQuery = query.toLowerCase();
++            filteredApps = allApps.stream()
++                    .filter(app -> app.name.toLowerCase().contains(lowerQuery) || app.packageName.toLowerCase().contains(lowerQuery))
++                    .collect(Collectors.toList());
++        }
++        notifyDataSetChanged();
++    }
++
++    @NonNull
++    @Override
++    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
++        View view = LayoutInflater.from(parent.getContext()).inflate(R.layout.list_item_app, parent, false);
++        return new ViewHolder(view);
++    }
++
++    @Override
++    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
++        AppInfo app = filteredApps.get(position);
++        holder.textAppName.setText(app.name);
++        holder.textPackageName.setText(app.packageName);
++        holder.imgAppIcon.setImageDrawable(app.icon);
++        holder.checkApp.setChecked(app.isSelected);
++        holder.itemView.setOnClickListener(v -> listener.onAppClick(app));
++    }
++
++    @Override
++    public int getItemCount() {
++        return filteredApps.size();
++    }
++
++    public static class ViewHolder extends RecyclerView.ViewHolder {
++        ImageView imgAppIcon;
++        TextView textAppName;
++        TextView textPackageName;
++        CheckBox checkApp;
++
++        public ViewHolder(@NonNull View itemView) {
++            super(itemView);
++            imgAppIcon = itemView.findViewById(R.id.img_app_icon);
++            textAppName = itemView.findViewById(R.id.text_app_name);
++            textPackageName = itemView.findViewById(R.id.text_package_name);
++            checkApp = itemView.findViewById(R.id.check_app);
++        }
++    }
++}
+diff --git a/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingFragment.java b/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingFragment.java
+new file mode 100644
+index 00000000..5f5f1ec8
+--- /dev/null
++++ b/app/src/main/java/io/netbird/client/ui/splittunneling/SplitTunnelingFragment.java
+@@ -0,0 +1,159 @@
++package io.netbird.client.ui.splittunneling;
++
++import android.content.Context;
++import android.content.pm.ApplicationInfo;
++import android.content.pm.PackageManager;
++import android.graphics.drawable.Drawable;
++import android.os.Bundle;
++import android.text.Editable;
++import android.text.TextWatcher;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.appcompat.app.AlertDialog;
++import androidx.fragment.app.Fragment;
++import androidx.recyclerview.widget.LinearLayoutManager;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.stream.Collectors;
++
++import io.netbird.client.R;
++import io.netbird.client.databinding.FragmentSplitTunnelingBinding;
++import io.netbird.client.tool.Preferences;
++import io.netbird.client.tool.Preferences.SplitTunnelingMode;
++
++public class SplitTunnelingFragment extends Fragment {
++
++    private FragmentSplitTunnelingBinding binding;
++    private SplitTunnelingAdapter adapter;
++    private Preferences preferences;
++    private List<AppInfo> allApps = new ArrayList<>();
++    private ExecutorService backgroundExecutor;
++
++    @Nullable
++    @Override
++    public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
++        binding = FragmentSplitTunnelingBinding.inflate(inflater, container, false);
++        preferences = new Preferences(requireContext());
++        backgroundExecutor = Executors.newSingleThreadExecutor();
++        setupUI();
++        loadApps();
++        return binding.getRoot();
++    }
++
++    private void setupUI() {
++        adapter = new SplitTunnelingAdapter(app -> {
++            app.isSelected = !app.isSelected;
++            saveApps();
++            adapter.notifyDataSetChanged();
++        });
++
++        binding.recyclerApps.setLayoutManager(new LinearLayoutManager(requireContext()));
++        binding.recyclerApps.setAdapter(adapter);
++
++        Preferences.SplitTunnelingMode mode = preferences.getSplitTunnelingMode();
++        switch (mode) {
++            case NONE:
++                binding.radioGroupMode.check(R.id.radio_mode_none);
++                break;
++            case EXCLUDE:
++                binding.radioGroupMode.check(R.id.radio_mode_exclude);
++                break;
++            case INCLUDE:
++                binding.radioGroupMode.check(R.id.radio_mode_include);
++                break;
++        }
++
++        binding.radioGroupMode.setOnCheckedChangeListener((group, checkedId) -> {
++            Preferences.SplitTunnelingMode newMode;
++            if (checkedId == R.id.radio_mode_none) {
++                newMode = Preferences.SplitTunnelingMode.NONE;
++            } else if (checkedId == R.id.radio_mode_exclude) {
++                newMode = Preferences.SplitTunnelingMode.EXCLUDE;
++            } else if (checkedId == R.id.radio_mode_include) {
++                newMode = Preferences.SplitTunnelingMode.INCLUDE;
++            } else {
++                newMode = Preferences.SplitTunnelingMode.NONE;
++            }
++            preferences.setSplitTunnelingMode(newMode);
++        });
++
++        binding.editSearch.addTextChangedListener(new TextWatcher() {
++            @Override
++            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
++
++            @Override
++            public void onTextChanged(CharSequence s, int start, int before, int count) {
++                adapter.filter(s.toString());
++            }
++
++            @Override
++            public void afterTextChanged(Editable s) {}
++        });
++    }
++
++    private void loadApps() {
++        if (backgroundExecutor == null) return;
++        Context context = getContext();
++        if (context == null) return;
++
++        PackageManager pm = context.getPackageManager();
++        String myPackageName = context.getPackageName();
++        binding.progressBar.setVisibility(View.VISIBLE);
++
++        backgroundExecutor.execute(() -> {
++            List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
++            Set<String> selectedApps = preferences.getSplitTunnelingApps();
++
++            List<AppInfo> loadedApps = apps.stream()
++                    .filter(app -> !app.packageName.equals(myPackageName))
++                    .map(app -> {
++                        String name = pm.getApplicationLabel(app).toString();
++                        Drawable icon = pm.getApplicationIcon(app);
++                        return new AppInfo(name, app.packageName, icon, selectedApps.contains(app.packageName));
++                    })
++                    .sorted((a, b) -> a.name.compareToIgnoreCase(b.name))
++                    .collect(Collectors.toList());
++
++            if (binding != null) {
++                binding.getRoot().post(() -> {
++                    if (binding != null) {
++                        allApps = loadedApps;
++                        adapter.setApps(allApps);
++                        binding.progressBar.setVisibility(View.GONE);
++                    }
++                });
++            }
++        });
++    }
++
++    private void saveApps() {
++        if (backgroundExecutor == null) return;
++        List<AppInfo> appsSnapshot = new ArrayList<>(allApps);
++        backgroundExecutor.execute(() -> {
++            Set<String> selectedApps = appsSnapshot.stream()
++                    .filter(app -> app.isSelected)
++                    .map(app -> app.packageName)
++                    .collect(Collectors.toSet());
++            preferences.setSplitTunnelingApps(selectedApps);
++        });
++    }
++
++    @Override
++    public void onDestroyView() {
++        super.onDestroyView();
++        if (backgroundExecutor != null) {
++            backgroundExecutor.shutdown();
++            backgroundExecutor = null;
++        }
++        binding = null;
++    }
++}
+diff --git a/app/src/main/res/drawable/ic_chevron_right.xml b/app/src/main/res/drawable/ic_chevron_right.xml
+new file mode 100644
+index 00000000..c55f00c0
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_chevron_right.xml
+@@ -0,0 +1,10 @@
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24"
++    android:tint="?attr/colorControlNormal">
++    <path
++        android:fillColor="#FF000000"
++        android:pathData="M8.59,16.59L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.59Z" />
++</vector>
+diff --git a/app/src/main/res/layout/fragment_advanced.xml b/app/src/main/res/layout/fragment_advanced.xml
+index ce48fdf5..362fd6b6 100644
+--- a/app/src/main/res/layout/fragment_advanced.xml
++++ b/app/src/main/res/layout/fragment_advanced.xml
+@@ -523,6 +523,63 @@
+                 app:layout_constraintStart_toStartOf="parent"
+                 app:layout_constraintTop_toBottomOf="@id/layout_disable_ipv6" />
+ 
++            <View
++                android:id="@+id/separator_split_tunneling"
++                android:layout_width="0dp"
++                android:layout_height="1dp"
++                android:layout_marginTop="24dp"
++                android:background="@drawable/separator"
++                app:layout_constraintEnd_toEndOf="parent"
++                app:layout_constraintStart_toStartOf="parent"
++                app:layout_constraintTop_toBottomOf="@id/layout_force_relay_connection" />
++
++            <LinearLayout
++                android:id="@+id/layout_split_tunneling"
++                android:layout_width="0dp"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="24dp"
++                android:background="@drawable/focus_highlight"
++                android:clickable="true"
++                android:focusable="true"
++                android:focusableInTouchMode="false"
++                android:gravity="center_vertical"
++                android:orientation="horizontal"
++                android:padding="12dp"
++                app:layout_constraintEnd_toEndOf="parent"
++                app:layout_constraintStart_toStartOf="parent"
++                app:layout_constraintTop_toBottomOf="@id/separator_split_tunneling">
++
++                <LinearLayout
++                    android:layout_width="0dp"
++                    android:layout_height="wrap_content"
++                    android:layout_weight="1"
++                    android:orientation="vertical">
++
++                    <TextView
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/advanced_split_tunneling"
++                        android:textColor="@color/nb_txt"
++                        android:textSize="18sp"
++                        android:textStyle="bold" />
++
++                    <TextView
++                        android:id="@+id/text_split_tunneling_desc"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/advanced_split_tunneling_desc"
++                        android:textColor="@color/nb_txt_light"
++                        android:textSize="14sp" />
++                </LinearLayout>
++
++                <ImageView
++                    android:layout_width="wrap_content"
++                    android:layout_height="wrap_content"
++                    android:contentDescription="@null"
++                    app:srcCompat="@drawable/ic_chevron_right"
++                    app:tint="@color/nb_txt_light" />
++            </LinearLayout>
++
+             <LinearLayout
+                 android:id="@+id/layout_theme"
+                 android:layout_width="0dp"
+@@ -531,7 +588,7 @@
+                 android:orientation="vertical"
+                 app:layout_constraintEnd_toEndOf="parent"
+                 app:layout_constraintStart_toStartOf="parent"
+-                app:layout_constraintTop_toBottomOf="@id/layout_force_relay_connection">
++                app:layout_constraintTop_toBottomOf="@id/layout_split_tunneling">
+ 
+                 <TextView
+                     android:layout_width="wrap_content"
+diff --git a/app/src/main/res/layout/fragment_split_tunneling.xml b/app/src/main/res/layout/fragment_split_tunneling.xml
+new file mode 100644
+index 00000000..5f5f2593
+--- /dev/null
++++ b/app/src/main/res/layout/fragment_split_tunneling.xml
+@@ -0,0 +1,98 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    xmlns:tools="http://schemas.android.com/tools"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical"
++    android:background="@color/nb_bg"
++    tools:context=".ui.splittunneling.SplitTunnelingFragment">
++
++    <androidx.constraintlayout.widget.ConstraintLayout
++        android:layout_width="match_parent"
++        android:layout_height="match_parent"
++        android:maxWidth="@dimen/fragment_max_width"
++        android:layout_gravity="center_horizontal"
++        android:padding="16dp">
++
++        <TextView
++            android:id="@+id/text_mode_title"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="@string/split_tunneling_title"
++            android:textColor="@color/nb_txt"
++            android:textSize="20sp"
++            android:textStyle="bold"
++            app:layout_constraintTop_toTopOf="parent"
++            app:layout_constraintStart_toStartOf="parent" />
++
++        <RadioGroup
++            android:id="@+id/radio_group_mode"
++            android:layout_width="0dp"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:orientation="vertical"
++            app:layout_constraintTop_toBottomOf="@id/text_mode_title"
++            app:layout_constraintStart_toStartOf="parent"
++            app:layout_constraintEnd_toEndOf="parent">
++
++            <RadioButton
++                android:id="@+id/radio_mode_none"
++                android:layout_width="match_parent"
++                android:layout_height="wrap_content"
++                android:text="@string/split_tunneling_mode_none"
++                android:textColor="@color/nb_txt_light" />
++
++            <RadioButton
++                android:id="@+id/radio_mode_exclude"
++                android:layout_width="match_parent"
++                android:layout_height="wrap_content"
++                android:text="@string/split_tunneling_mode_exclude"
++                android:textColor="@color/nb_txt_light" />
++
++            <RadioButton
++                android:id="@+id/radio_mode_include"
++                android:layout_width="match_parent"
++                android:layout_height="wrap_content"
++                android:text="@string/split_tunneling_mode_include"
++                android:textColor="@color/nb_txt_light" />
++        </RadioGroup>
++
++        <EditText
++            android:id="@+id/edit_search"
++            android:layout_width="0dp"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:hint="@string/split_tunneling_search_hint"
++            android:background="@drawable/edit_text_white_focusable"
++            android:padding="12dp"
++            android:textColor="@color/nb_txt"
++            android:textColorHint="@color/nb_txt_light"
++            app:layout_constraintTop_toBottomOf="@id/radio_group_mode"
++            app:layout_constraintStart_toStartOf="parent"
++            app:layout_constraintEnd_toEndOf="parent" />
++
++        <androidx.recyclerview.widget.RecyclerView
++            android:id="@+id/recycler_apps"
++            android:layout_width="0dp"
++            android:layout_height="0dp"
++            android:layout_marginTop="8dp"
++            app:layout_constraintTop_toBottomOf="@id/edit_search"
++            app:layout_constraintBottom_toBottomOf="parent"
++            app:layout_constraintStart_toStartOf="parent"
++            app:layout_constraintEnd_toEndOf="parent"
++            tools:listitem="@layout/list_item_app" />
++
++        <ProgressBar
++            android:id="@+id/progress_bar"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:visibility="gone"
++            app:layout_constraintTop_toTopOf="@id/recycler_apps"
++            app:layout_constraintBottom_toBottomOf="@id/recycler_apps"
++            app:layout_constraintStart_toStartOf="@id/recycler_apps"
++            app:layout_constraintEnd_toEndOf="@id/recycler_apps" />
++
++    </androidx.constraintlayout.widget.ConstraintLayout>
++
++</LinearLayout>
+diff --git a/app/src/main/res/layout/list_item_app.xml b/app/src/main/res/layout/list_item_app.xml
+new file mode 100644
+index 00000000..0e6c749b
+--- /dev/null
++++ b/app/src/main/res/layout/list_item_app.xml
+@@ -0,0 +1,47 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:orientation="horizontal"
++    android:padding="8dp"
++    android:gravity="center_vertical"
++    android:background="@drawable/focus_highlight"
++    android:clickable="true"
++    android:focusable="true">
++
++    <ImageView
++        android:id="@+id/img_app_icon"
++        android:layout_width="40dp"
++        android:layout_height="40dp"
++        android:contentDescription="@null" />
++
++    <LinearLayout
++        android:layout_width="0dp"
++        android:layout_height="wrap_content"
++        android:layout_weight="1"
++        android:layout_marginStart="12dp"
++        android:orientation="vertical">
++
++        <TextView
++            android:id="@+id/text_app_name"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:textColor="@color/nb_txt"
++            android:textSize="16sp" />
++
++        <TextView
++            android:id="@+id/text_package_name"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:textColor="@color/nb_txt_light"
++            android:textSize="12sp" />
++    </LinearLayout>
++
++    <CheckBox
++        android:id="@+id/check_app"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:focusable="false"
++        android:clickable="false" />
++
++</LinearLayout>
+diff --git a/app/src/main/res/navigation/mobile_navigation.xml b/app/src/main/res/navigation/mobile_navigation.xml
+index 3f749393..b4e6e5c1 100644
+--- a/app/src/main/res/navigation/mobile_navigation.xml
++++ b/app/src/main/res/navigation/mobile_navigation.xml
+@@ -36,6 +36,12 @@
+         android:label="@string/menu_profiles"
+         tools:layout="@layout/fragment_profiles" />
+ 
++    <fragment
++        android:id="@+id/nav_split_tunneling"
++        android:name="io.netbird.client.ui.splittunneling.SplitTunnelingFragment"
++        android:label="@string/split_tunneling_title"
++        tools:layout="@layout/fragment_split_tunneling" />
++
+     <fragment
+         android:id="@+id/nav_change_server"
+         android:name="io.netbird.client.ui.server.ChangeServerFragment"
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 5fb4474b..59a10674 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -114,6 +114,13 @@
+     <string name="advanced_theme_desc">Choose the app appearance mode.</string>
+     <string name="advanced_force_relay_conn">Force relay connection</string>
+     <string name="advanced_force_relay_conn_desc">Forces usage of relay when connecting to peers</string>
++    <string name="advanced_split_tunneling">Split Tunneling</string>
++    <string name="advanced_split_tunneling_desc">Select which apps should use or bypass the VPN</string>
++    <string name="split_tunneling_title">Split Tunneling</string>
++    <string name="split_tunneling_mode_none">None (All apps use VPN)</string>
++    <string name="split_tunneling_mode_exclude">Exclude (Selected apps bypass VPN)</string>
++    <string name="split_tunneling_mode_include">Include (Selected apps use VPN)</string>
++    <string name="split_tunneling_search_hint">Search apps</string>
+     <string name="exclamation_mark">exclamation mark</string>
+     <string name="reconnectionNeededWarningMessage">To apply the setting, you will need to reconnect.</string>
+     <string name="change_server_setup_key_warning">Using setup keys for user devices is not recommended. SSO with MFA provides stronger security, proper user-device association, and periodic re-authentication.</string>
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 018bc26c..7dcb8cbe 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -10,6 +10,8 @@ appcompat = "1.7.0"
+ lottie = "6.4.0"
+ material = "1.12.0"
+ constraintlayout = "2.2.1"
++androidx-recyclerview = "1.3.2"
++androidx-fragment = "1.8.5"
+ lifecycleLivedataKtx = "2.9.0"
+ lifecycleViewmodelKtx = "2.9.0"
+ navigationFragment = "2.9.0"
+@@ -18,6 +20,8 @@ firebase-bom = "34.2.0"
+ google-services = "4.4.2"
+ firebase-crashlytics-plugin = "3.0.6"
+ zxing = "4.3.0"
++navigationFragmentVersion = "2.9.8"
++navigationUiVersion = "2.9.8"
+ 
+ [libraries]
+ browser = { module = "androidx.browser:browser", version.ref = "browser" }
+@@ -30,6 +34,8 @@ appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "a
+ lottie = { module = "com.airbnb.android:lottie", version.ref = "lottie" }
+ material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+ constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
++androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "androidx-recyclerview" }
++androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "androidx-fragment" }
+ lifecycle-livedata-ktx = { group = "androidx.lifecycle", name = "lifecycle-livedata-ktx", version.ref = "lifecycleLivedataKtx" }
+ lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycleViewmodelKtx" }
+ navigation-fragment = { group = "androidx.navigation", name = "navigation-fragment", version.ref = "navigationFragment" }
+@@ -38,6 +44,8 @@ firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.r
+ firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
+ firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics" }
+ zxing = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxing" }
++androidx-navigation-fragment = { group = "androidx.navigation", name = "navigation-fragment", version.ref = "navigationFragmentVersion" }
++androidx-navigation-ui = { group = "androidx.navigation", name = "navigation-ui", version.ref = "navigationUiVersion" }
+ 
+ [plugins]
+ android-application = { id = "com.android.application", version.ref = "agp" }
+diff --git a/tool/src/main/java/io/netbird/client/tool/IFace.java b/tool/src/main/java/io/netbird/client/tool/IFace.java
+index 137fe8ce..1401d1b3 100644
+--- a/tool/src/main/java/io/netbird/client/tool/IFace.java
++++ b/tool/src/main/java/io/netbird/client/tool/IFace.java
+@@ -12,6 +12,7 @@
+ import android.util.Log;
+ 
+ import java.util.LinkedList;
++import java.util.Set;
+ import java.util.concurrent.CountDownLatch;
+ 
+ import io.netbird.gomobile.android.TunAdapter;
+@@ -86,10 +87,7 @@ private int createTun(String ip, int prefixLength, InetNetwork addrV6, int mtu,
+             Log.d(LOGTAG, "add route: "+r.addr+"/"+r.prefixLength);
+         }
+ 
+-        disallowApp(builder, "com.google.android.projection.gearhead");
+-        disallowApp(builder, "com.google.android.apps.chromecast.app");
+-        disallowApp(builder, "com.google.android.apps.messaging");
+-        disallowApp(builder, "com.google.stadia.android");
++        applySplitTunneling(builder);
+ 
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+             builder.setMetered(false);
+@@ -145,6 +143,41 @@ private void disallowApp(VpnService.Builder builder, String packageName) {
+         }
+     }
+ 
++    private void applySplitTunneling(VpnService.Builder builder) {
++        Preferences prefs = new Preferences(vpnService);
++        Preferences.SplitTunnelingMode mode = prefs.getSplitTunnelingMode();
++        Set<String> apps = prefs.getSplitTunnelingApps();
++
++        Log.d(LOGTAG, "Applying split tunneling mode: " + mode);
++
++        if (mode == Preferences.SplitTunnelingMode.INCLUDE) {
++            if (apps.isEmpty()) {
++                Log.w(LOGTAG, "Include mode selected but no apps specified, VPN will be effectively enabled for all apps");
++            }
++            for (String app : apps) {
++                try {
++                    builder.addAllowedApplication(app);
++                    Log.d(LOGTAG, "Allowed app: " + app);
++                } catch (PackageManager.NameNotFoundException e) {
++                    Log.w(LOGTAG, "App not found for allowed list: " + app);
++                }
++            }
++        } else {
++            // Default and EXCLUDE mode
++            disallowApp(builder, "com.google.android.projection.gearhead");
++            disallowApp(builder, "com.google.android.apps.chromecast.app");
++            disallowApp(builder, "com.google.android.apps.messaging");
++            disallowApp(builder, "com.google.stadia.android");
++
++            if (mode == Preferences.SplitTunnelingMode.EXCLUDE) {
++                for (String app : apps) {
++                    disallowApp(builder, app);
++                    Log.d(LOGTAG, "Disallowed app: " + app);
++                }
++            }
++        }
++    }
++
+     @SuppressLint("DefaultLocale")
+     @Override
+     public void updateAddr(String s) throws Exception {
+diff --git a/tool/src/main/java/io/netbird/client/tool/Preferences.java b/tool/src/main/java/io/netbird/client/tool/Preferences.java
+index ddf57ca5..e49d9655 100644
+--- a/tool/src/main/java/io/netbird/client/tool/Preferences.java
++++ b/tool/src/main/java/io/netbird/client/tool/Preferences.java
+@@ -3,12 +3,19 @@
+ import android.content.Context;
+ import android.content.SharedPreferences;
+ 
++import java.util.HashSet;
++import java.util.Set;
++
+ public class Preferences {
+ 
+     private final String keyTraceLog = "tracelog";
+ 
+     private final String keyForceRelayConnection = "isConnectionForceRelayed";
+ 
++    private final String keySplitTunnelingMode = "splitTunnelingMode";
++
++    private final String keySplitTunnelingApps = "splitTunnelingApps";
++
+     private final SharedPreferences sharedPref;
+ 
+     public Preferences(Context context) {
+@@ -41,4 +48,31 @@ public void disableForcedRelayConnection() {
+     public static String defaultServer() {
+         return "https://api.netbird.io";
+     }
++
++    public enum SplitTunnelingMode {
++        NONE,
++        EXCLUDE,
++        INCLUDE
++    }
++
++    public SplitTunnelingMode getSplitTunnelingMode() {
++        String mode = sharedPref.getString(keySplitTunnelingMode, SplitTunnelingMode.NONE.name());
++        try {
++            return SplitTunnelingMode.valueOf(mode);
++        } catch (IllegalArgumentException e) {
++            return SplitTunnelingMode.NONE;
++        }
++    }
++
++    public void setSplitTunnelingMode(SplitTunnelingMode mode) {
++        sharedPref.edit().putString(keySplitTunnelingMode, mode.name()).apply();
++    }
++
++    public Set<String> getSplitTunnelingApps() {
++        return sharedPref.getStringSet(keySplitTunnelingApps, new HashSet<>());
++    }
++
++    public void setSplitTunnelingApps(Set<String> apps) {
++        sharedPref.edit().putStringSet(keySplitTunnelingApps, apps).apply();
++    }
+ }
