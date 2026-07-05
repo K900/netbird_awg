@@ -38,7 +38,13 @@ clone_and_checkout() {
 mkdir -p "$REPOS_DIR"
 
 clone_and_checkout "$NETBIRD_REPO" "$REPOS_DIR/netbird" "$NETBIRD_REF"
-clone_and_checkout "$ANDROID_REPO" "$REPOS_DIR/android" "$ANDROID_REF"
+if [[ "${INCLUDE_ANDROID:-false}" == "true" ]]; then
+  if [[ -z "${ANDROID_REF:-}" ]]; then
+    echo "[error] ANDROID_REF is empty. Set ANDROID_BASE_TAG in .env or ANDROID_REF env." >&2
+    exit 1
+  fi
+  clone_and_checkout "$ANDROID_REPO" "$REPOS_DIR/android" "$ANDROID_REF"
+fi
 clone_and_checkout "$AWG_GO_REPO" "$REPOS_DIR/amneziawg-go" "$AWG_GO_REF"
 
 echo "[ok] sources are prepared in $REPOS_DIR"

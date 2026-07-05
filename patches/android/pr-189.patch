@@ -1,3 +1,32 @@
+diff --git a/build-android-lib.sh b/build-android-lib.sh
+index 67f1719c..2c90a9a0 100755
+--- a/build-android-lib.sh
++++ b/build-android-lib.sh
+@@ -59,8 +59,21 @@ echo "Using version: $version"
+-
+ gomobile init
+-
+-CGO_ENABLED=0 gomobile bind \
++real_go=$(command -v go)
++go_wrapper_dir=$(mktemp -d)
++trap 'rm -rf "$go_wrapper_dir"' EXIT
++cat > "$go_wrapper_dir/go" <<EOF
++#!/bin/bash
++set -euo pipefail
++real_go="$real_go"
++if [[ -f go.mod ]] && grep -q '^module gobind' go.mod; then
++  "\$real_go" mod edit -require=github.com/cloudflare/circl@v1.3.3
++  "\$real_go" mod edit -replace=github.com/cloudflare/circl=codeberg.org/cunicu/circl@v0.0.0-20230801113412-fec58fc7b5f6
++fi
++exec "\$real_go" "\$@"
++EOF
++chmod +x "$go_wrapper_dir/go"
++
++PATH="$go_wrapper_dir:$PATH" CGO_ENABLED=0 gomobile bind \
+   -o "$app_path/gomobile/netbird.aar" \
+   -javapkg=io.netbird.gomobile \
+   -ldflags="-linkmode=external -extldflags=-Wl,-z,max-page-size=16384 -checklinkname=0 -X golang.zx2c4.com/wireguard/ipc.socketDirectory=/data/data/io.netbird.client/cache/wireguard -X github.com/netbirdio/netbird/version.version=$version" \
+   "$(pwd)/client/android"
 diff --git a/app/src/main/java/io/netbird/client/MainActivity.java b/app/src/main/java/io/netbird/client/MainActivity.java
 index c7fb0b54..2d6a1118 100644
 --- a/app/src/main/java/io/netbird/client/MainActivity.java

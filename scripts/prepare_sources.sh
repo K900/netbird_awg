@@ -66,9 +66,11 @@ apply_patches() {
   for i in "$PATCH_DIR/netbird/"*.patch; do
     apply_or_skip "$NETBIRD_DIR" "$i"
   done
-  for i in "$PATCH_DIR/android/"*.patch; do
-    apply_or_skip "$ANDROID_DIR" "$i"
-  done
+  if [[ "${INCLUDE_ANDROID:-false}" == "true" ]]; then
+    for i in "$PATCH_DIR/android/"*.patch; do
+      apply_or_skip "$ANDROID_DIR" "$i"
+    done
+  fi
   log ok "patches are applied"
 }
 
@@ -98,8 +100,8 @@ replace_imports() {
   go mod edit -dropreplace=golang.zx2c4.com/wireguard || true
   go mod edit -dropreplace=github.com/amnezia-vpn/amneziawg-go || true
   go mod edit -replace=github.com/amnezia-vpn/amneziawg-go="$AWG_GO_DIR"
-  # somehow this helps Android build, idk
-  go get github.com/cloudflare/circl
+  go mod edit -require=github.com/cloudflare/circl@v1.3.3
+  go mod edit -replace=github.com/cloudflare/circl=codeberg.org/cunicu/circl@v0.0.0-20230801113412-fec58fc7b5f6
   go mod tidy
   popd >/dev/null
 
@@ -160,11 +162,15 @@ install_goreleaser_configs() {
 
 main() {
   require_repo "$NETBIRD_DIR" "netbird"
-  require_repo "$ANDROID_DIR" "android"
+  if [[ "${INCLUDE_ANDROID:-false}" == "true" ]]; then
+    require_repo "$ANDROID_DIR" "android"
+  fi
   require_repo "$AWG_GO_DIR" "amneziawg-go"
 
   apply_patches
-  patch_android
+  if [[ "${INCLUDE_ANDROID:-false}" == "true" ]]; then
+    patch_android
+  fi
   regenerate_protos
   replace_imports
   set_netbird_version
