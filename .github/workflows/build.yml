@@ -2,6 +2,7 @@ name: NetBird AWG Build
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -102,6 +103,113 @@ jobs:
             ${{ github.workspace }}/workdir/repos/netbird/dist-nfpm/*.deb
             ${{ github.workspace }}/workdir/repos/netbird/dist-nfpm/*.rpm
             ${{ github.workspace }}/workdir/repos/netbird/dist-nfpm/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+
+  build_android:
+    runs-on: ubuntu-latest
+    env:
+      WORKDIR: ${{ github.workspace }}/workdir
+      BASE_TAG: ${{ inputs.base_tag || '' }}
+      RELEASE_MODE: ${{ inputs.release_mode && 'true' || 'false' }}
+      INCLUDE_ANDROID: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve vars
+        run: |
+          ./scripts/version_vars.sh --github-env >> "$GITHUB_ENV"
+          ./scripts/version_vars.sh --print
+
+      - name: Clone sources
+        run: ./scripts/clone_sources.sh
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ github.workspace }}/workdir/repos/netbird/go.mod
+          cache: true
+          cache-dependency-path: |
+            ${{ github.workspace }}/workdir/repos/netbird/go.mod
+            ${{ github.workspace }}/workdir/repos/netbird/go.sum
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "adopt"
+          cache: "gradle"
+
+      - name: Setup NDK
+        shell: bash
+        run: ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620"
+
+      - name: Set ANDROID_NDK_HOME
+        shell: bash
+        run: echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/23.1.7779620" >> $GITHUB_ENV
+
+      - name: Install gomobile
+        shell: bash
+        run: go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20251113184115-a159579294ab
+
+      - name: Prepare sources
+        run: ./scripts/prepare_sources.sh
+
+      - name: Build Android Go library
+        shell: bash
+        run: |
+          cd workdir/repos/android
+          PATH=$PATH:$(go env GOPATH)/bin bash -x build-android-lib.sh ${NETBIRD_RELEASE_TAG}
+
+      - name: Prepare Android signing key
+        if: ${{ env.RELEASE_MODE == 'true' }}
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -z "${ANDROID_KEYSTORE_BASE64}" ]]; then
+            echo "[error] ANDROID_KEYSTORE_BASE64 secret is not set" >&2
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/android-signing"
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/android-signing/netbird-awg-release.p12"
+          echo "NETBIRD_UPLOAD_STORE_FILE=${RUNNER_TEMP}/android-signing/netbird-awg-release.p12" >> "$GITHUB_ENV"
+
+      - name: Build signed APK
+        if: ${{ env.RELEASE_MODE == 'true' }}
+        shell: bash
+        env:
+          NETBIRD_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NETBIRD_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          NETBIRD_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "${NETBIRD_UPLOAD_STORE_PASSWORD}" || -z "${NETBIRD_UPLOAD_KEY_ALIAS}" || -z "${NETBIRD_UPLOAD_KEY_PASSWORD}" ]]; then
+            echo "[error] Android signing secrets are not fully set" >&2
+            exit 1
+          fi
+          cd workdir/repos/android
+          ./gradlew --no-daemon assembleRelease -PversionName="${NETBIRD_RELEASE_TAG}" -PversionCode="${{ github.run_number }}"
+
+      - name: Build unsigned APK
+        if: ${{ env.RELEASE_MODE != 'true' }}
+        shell: bash
+        run: |
+          cd workdir/repos/android
+          ./gradlew --no-daemon assembleRelease -PversionName="${NETBIRD_RELEASE_TAG}" -PversionCode="${{ github.run_number }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-android-${{ github.run_number }}-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/workdir/repos/android/app/build/outputs/apk/*/*.apk
           if-no-files-found: error
           retention-days: 7
 
