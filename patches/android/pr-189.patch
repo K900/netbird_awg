@@ -1,3 +1,17 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index f8583791..cb0ab50e 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -51,6 +51,8 @@ android {
+     buildTypes {
+         getByName("release") {
+-            signingConfig = signingConfigs.getByName("release")
++            if (!getPropertyOrEnv("NETBIRD_UPLOAD_STORE_FILE").isNullOrBlank()) {
++                signingConfig = signingConfigs.getByName("release")
++            }
+             proguardFiles(
+                 getDefaultProguardFile("proguard-android-optimize.txt"),
+                 "proguard-rules.pro"
 diff --git a/build-android-lib.sh b/build-android-lib.sh
 index 67f1719c..2c90a9a0 100755
 --- a/build-android-lib.sh
