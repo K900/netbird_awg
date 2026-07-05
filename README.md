@@ -51,5 +51,5 @@ NETBIRD_AMNEZIA_I5=
 - This is a side project. Updates may lag behind official NetBird releases. Bugs may present.
 - Auto-update works.
 - PRs are always welcome.
-- From version `v0.73.1-awg-r2 `fallback has been introduced to move amneziaWG settings field from `6` to `2047`.
+- From version `v0.73.1-awg-r2` fallback has been introduced to move amneziaWG settings field from `6` to `2047`.
   Clients should be compatible with each other. 
