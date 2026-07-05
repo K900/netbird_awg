@@ -783,7 +783,7 @@ diff --git a/management/Dockerfile.multistage b/management/Dockerfile.multistage
 index 619f84615..143cc5c54 100644
 --- a/management/Dockerfile.multistage
 +++ b/management/Dockerfile.multistage
-@@ -5,6 +5,8 @@ WORKDIR /app
+@@ -5,9 +5,11 @@ WORKDIR /app
  RUN apt-get update && apt-get install -y gcc libc6-dev && rm -rf /var/lib/apt/lists/*
  
  COPY go.mod go.sum ./
@@ -792,6 +792,10 @@ index 619f84615..143cc5c54 100644
  RUN go mod download
  
  COPY . .
++RUN go mod edit -replace=github.com/amnezia-vpn/amneziawg-go=/amneziawg-go
+ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o netbird-mgmt ./management
+-
+ FROM ubuntu:24.04
 diff --git a/management/internals/shared/grpc/conversion.go b/management/internals/shared/grpc/conversion.go
 index ced982a30..a4c173fed 100644
 --- a/management/internals/shared/grpc/conversion.go
