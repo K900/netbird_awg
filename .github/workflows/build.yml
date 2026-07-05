@@ -108,6 +108,8 @@ jobs:
 
   build_android:
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.release_mode && 'awg-release' || 'ci' }}
     env:
       WORKDIR: ${{ github.workspace }}/workdir
       BASE_TAG: ${{ inputs.base_tag || '' }}
