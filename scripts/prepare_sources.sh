@@ -123,7 +123,7 @@ set_netbird_version() {
     exit 1
   fi
 
-  perl -0pi -e 's/var version = "[^"]*"/var version = "'"$NETBIRD_RELEASE_TAG"'"/g' "$version_file"
+  perl -0pi -e 's/var version = (?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)/var version = "'"$NETBIRD_RELEASE_TAG"'"/g' "$version_file"
   local current
   current="$(grep -n '^var version = ' "$version_file" | head -n 1 | sed 's/.*= //')"
   log ok "netbird source version set to $current"
