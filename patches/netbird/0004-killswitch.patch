@@ -5,10 +5,10 @@ Subject: [PATCH] client: killswitch
 
 
 diff --git a/client/internal/dns/local/local.go b/client/internal/dns/local/local.go
-index fef35fd41..115aeb5c4 100644
+index fef35fd..362a98d 100644
 --- a/client/internal/dns/local/local.go
 +++ b/client/internal/dns/local/local.go
-@@ -531,13 +531,13 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
+@@ -531,13 +531,14 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
  // non-mesh upstreams) are never dropped. Non-A/AAAA records pass
  // through untouched.
  //
@@ -21,21 +21,39 @@ index fef35fd41..115aeb5c4 100644
 +// answer. This is intentional fail-closed behavior: as long as NetBird
 +// is running and the host is known in the local config, traffic must not
 +// fall back to a non-NetBird path just because every matching peer is
-+// currently unavailable.
++// currently unavailable. CNAME-only leftovers from a filtered chain are
++// also suppressed so clients do not resolve the target outside NetBird.
  func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) []dns.RR {
 -	if len(records) < 2 {
 +	if len(records) == 0 {
  		return records
  	}
  	d.mu.RLock()
-@@ -566,8 +566,8 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+@@ -548,7 +549,7 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+ 	}
+ 
+ 	kept := make([]dns.RR, 0, len(records))
+-	var dropped int
++	var dropped, keptAddressRecords int
+ 	for _, rr := range records {
+ 		ip, ok := extractRecordAddr(rr)
+ 		if !ok {
+@@ -560,14 +561,15 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+ 			dropped++
+ 			continue
+ 		}
++		keptAddressRecords++
+ 		kept = append(kept, rr)
+ 	}
+ 	if dropped == 0 {
  		return records
  	}
- 	if len(kept) == 0 {
+-	if len(kept) == 0 {
 -		logger.Debugf("all %d answers for %s point at disconnected peers; returning the original list", dropped, question.Name)
 -		return records
-+		logger.Debugf("all %d answers for %s point at disconnected peers; returning an empty answer", dropped, question.Name)
-+		return kept
++	if keptAddressRecords == 0 {
++		logger.Debugf("all %d address answers for %s point at disconnected peers; returning an empty answer", dropped, question.Name)
++		return nil
  	}
  	logger.Tracef("dropped %d disconnected-peer answer(s) for %s, returning %d", dropped, question.Name, len(kept))
  	return kept
