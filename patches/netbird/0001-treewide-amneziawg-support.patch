@@ -803,7 +803,15 @@ diff --git a/management/internals/shared/grpc/conversion.go b/management/interna
 index 696d28f5c..14f762005 100644
 --- a/management/internals/shared/grpc/conversion.go
 +++ b/management/internals/shared/grpc/conversion.go
-@@ -18,6 +18,7 @@ import (
+@@ -10,6 +10,7 @@ import (
+ 
+ 	"github.com/hashicorp/go-version"
+ 	nbversion "github.com/netbirdio/netbird/version"
++	goproto "google.golang.org/protobuf/proto"
+ 	"google.golang.org/protobuf/types/known/timestamppb"
+ 
+ 	integrationsConfig "github.com/netbirdio/management-integrations/integrations/config"
+@@ -18,6 +19,7 @@ import (
  
  	"github.com/netbirdio/netbird/management/internals/controllers/network_map/controller/cache"
  	nbconfig "github.com/netbirdio/netbird/management/internals/server/config"
@@ -811,7 +819,7 @@ index 696d28f5c..14f762005 100644
  	nbpeer "github.com/netbirdio/netbird/management/server/peer"
  	"github.com/netbirdio/netbird/management/server/posture"
  	"github.com/netbirdio/netbird/management/server/types"
-@@ -28,12 +29,16 @@ import (
+@@ -28,12 +30,16 @@ import (
  
  const (
  	// deprecatedRemotePeersVersion is the version of Netbird that introduced the NetworkMap.RemotePeers field, deprecated in favor of RemotePeers.
