@@ -16,21 +16,30 @@ diff --git a/build-android-lib.sh b/build-android-lib.sh
 index 67f1719c..2c90a9a0 100755
 --- a/build-android-lib.sh
 +++ b/build-android-lib.sh
-@@ -59,8 +59,21 @@ echo "Using version: $version"
+@@ -59,8 +59,30 @@ echo "Using version: $version"
 -
  gomobile init
 -
 -CGO_ENABLED=0 gomobile bind \
 +real_go=$(command -v go)
++awg_go_dir=
++if [[ -d "$app_path/../amneziawg-go" ]]; then
++  awg_go_dir="$(cd "$app_path/../amneziawg-go" && pwd)"
++fi
 +go_wrapper_dir=$(mktemp -d)
 +trap 'rm -rf "$go_wrapper_dir"' EXIT
 +cat > "$go_wrapper_dir/go" <<EOF
 +#!/bin/bash
 +set -euo pipefail
 +real_go="$real_go"
++awg_go_dir="$awg_go_dir"
 +if [[ -f go.mod ]] && grep -q '^module gobind' go.mod; then
 +  "\$real_go" mod edit -require=github.com/cloudflare/circl@v1.3.3
 +  "\$real_go" mod edit -replace=github.com/cloudflare/circl=codeberg.org/cunicu/circl@v0.0.0-20230801113412-fec58fc7b5f6
++  if [[ -d "\$awg_go_dir" ]]; then
++    "\$real_go" mod edit -replace=github.com/amnezia-vpn/amneziawg-go="\$awg_go_dir"
++  fi
++  "\$real_go" mod tidy
 +fi
 +exec "\$real_go" "\$@"
 +EOF

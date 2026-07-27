@@ -32,11 +32,11 @@ index 000000000..8ad4f7224
 +	GetI5() string
 +}
 diff --git a/client/iface/configurer/usp.go b/client/iface/configurer/usp.go
-index 9b070aab8..dcbea6fcb 100644
+index 0a25c55bc..04666df4a 100644
 --- a/client/iface/configurer/usp.go
 +++ b/client/iface/configurer/usp.go
-@@ -42,23 +42,26 @@ type WGUSPConfigurer struct {
- 	activityRecorder *bind.ActivityRecorder
+@@ -43,24 +43,27 @@ type WGUSPConfigurer struct {
+ 	statsCache       *statsCache
  
  	uapiListener net.Listener
 +	amneziaConfig AmneziaConfig
@@ -50,21 +50,22 @@ index 9b070aab8..dcbea6fcb 100644
  		activityRecorder: activityRecorder,
 +		amneziaConfig:    amneziaConfig,
  	}
+ 	wgCfg.statsCache = newStatsCache(statsCacheTTL, wgCfg.fetchStats)
  	wgCfg.startUAPI()
  	return wgCfg
  }
  
 -func NewUSPConfigurerNoUAPI(device *device.Device, deviceName string, activityRecorder *bind.ActivityRecorder) *WGUSPConfigurer {
 +func NewUSPConfigurerNoUAPI(device *device.Device, deviceName string, activityRecorder *bind.ActivityRecorder, amneziaConfig AmneziaConfig) *WGUSPConfigurer {
- 	return &WGUSPConfigurer{
+ 	wgCfg := &WGUSPConfigurer{
  		device:           device,
  		deviceName:       deviceName,
  		activityRecorder: activityRecorder,
 +		amneziaConfig:    amneziaConfig,
  	}
- }
- 
-@@ -76,7 +79,7 @@ func (c *WGUSPConfigurer) ConfigureInterface(privateKey string, port int) error
+ 	wgCfg.statsCache = newStatsCache(statsCacheTTL, wgCfg.fetchStats)
+ 	return wgCfg
+@@ -80,7 +83,7 @@ func (c *WGUSPConfigurer) ConfigureInterface(privateKey string, port int) error
  		ListenPort:   &port,
  	}
  
@@ -73,7 +74,7 @@ index 9b070aab8..dcbea6fcb 100644
  }
  
  // SetPresharedKey sets the preshared key for a peer.
-@@ -88,7 +91,7 @@ func (c *WGUSPConfigurer) SetPresharedKey(peerKey string, psk wgtypes.Key, updat
+@@ -92,7 +95,7 @@ func (c *WGUSPConfigurer) SetPresharedKey(peerKey string, psk wgtypes.Key, updat
  	}
  
  	cfg := buildPresharedKeyConfig(parsedPeerKey, psk, updateOnly)
@@ -82,7 +83,7 @@ index 9b070aab8..dcbea6fcb 100644
  }
  
  func (c *WGUSPConfigurer) UpdatePeer(peerKey string, allowedIps []netip.Prefix, keepAlive time.Duration, endpoint *net.UDPAddr, preSharedKey *wgtypes.Key) error {
-@@ -110,7 +113,7 @@ func (c *WGUSPConfigurer) UpdatePeer(peerKey string, allowedIps []netip.Prefix,
+@@ -114,7 +117,7 @@ func (c *WGUSPConfigurer) UpdatePeer(peerKey string, allowedIps []netip.Prefix,
  		Peers: []wgtypes.PeerConfig{peer},
  	}
  
@@ -91,7 +92,7 @@ index 9b070aab8..dcbea6fcb 100644
  		return ipcErr
  	}
  
-@@ -164,7 +167,7 @@ func (c *WGUSPConfigurer) RemoveEndpointAddress(peerKey string) error {
+@@ -168,7 +171,7 @@ func (c *WGUSPConfigurer) RemoveEndpointAddress(peerKey string) error {
  	config := wgtypes.Config{
  		Peers: []wgtypes.PeerConfig{peer},
  	}
@@ -100,7 +101,7 @@ index 9b070aab8..dcbea6fcb 100644
  		return fmt.Errorf("failed to remove peer: %s", ipcErr)
  	}
  
-@@ -179,7 +182,7 @@ func (c *WGUSPConfigurer) RemoveEndpointAddress(peerKey string) error {
+@@ -183,7 +186,7 @@ func (c *WGUSPConfigurer) RemoveEndpointAddress(peerKey string) error {
  		Peers: []wgtypes.PeerConfig{peer},
  	}
  
@@ -109,7 +110,7 @@ index 9b070aab8..dcbea6fcb 100644
  		return fmt.Errorf("remove endpoint address: %w", err)
  	}
  
-@@ -200,7 +203,7 @@ func (c *WGUSPConfigurer) RemovePeer(peerKey string) error {
+@@ -204,7 +207,7 @@ func (c *WGUSPConfigurer) RemovePeer(peerKey string) error {
  	config := wgtypes.Config{
  		Peers: []wgtypes.PeerConfig{peer},
  	}
@@ -118,7 +119,7 @@ index 9b070aab8..dcbea6fcb 100644
  
  	c.activityRecorder.Remove(peerKey)
  	return ipcErr
-@@ -227,7 +230,7 @@ func (c *WGUSPConfigurer) AddAllowedIP(peerKey string, allowedIP netip.Prefix) e
+@@ -231,7 +234,7 @@ func (c *WGUSPConfigurer) AddAllowedIP(peerKey string, allowedIP netip.Prefix) e
  		Peers: []wgtypes.PeerConfig{peer},
  	}
  
@@ -127,7 +128,7 @@ index 9b070aab8..dcbea6fcb 100644
  }
  
  func (c *WGUSPConfigurer) RemoveAllowedIP(peerKey string, allowedIP netip.Prefix) error {
-@@ -292,7 +295,7 @@ func (c *WGUSPConfigurer) RemoveAllowedIP(peerKey string, allowedIP netip.Prefix
+@@ -296,7 +299,7 @@ func (c *WGUSPConfigurer) RemoveAllowedIP(peerKey string, allowedIP netip.Prefix
  	config := wgtypes.Config{
  		Peers: []wgtypes.PeerConfig{peer},
  	}
@@ -136,7 +137,7 @@ index 9b070aab8..dcbea6fcb 100644
  }
  
  func (c *WGUSPConfigurer) FullStats() (*Stats, error) {
-@@ -418,11 +421,17 @@ func parseTransfers(ipc string) (map[string]WGStats, error) {
+@@ -426,11 +429,17 @@ func parseTransfers(ipc string) (map[string]WGStats, error) {
  	return stats, nil
  }
  
@@ -155,7 +156,7 @@ index 9b070aab8..dcbea6fcb 100644
  	}
  
  	if wgCfg.ListenPort != nil {
-@@ -473,6 +482,53 @@ func toWgUserspaceString(wgCfg wgtypes.Config) string {
+@@ -481,6 +490,53 @@ func toWgUserspaceString(wgCfg wgtypes.Config) string {
  	return sb.String()
  }
  
@@ -667,10 +668,10 @@ index 000000000..306cf395a
 +	return cfg, true
 +}
 diff --git a/client/internal/connect.go b/client/internal/connect.go
-index d93b62bb5..e8a887b0e 100644
+index f4d14aab2..b193291b9 100644
 --- a/client/internal/connect.go
 +++ b/client/internal/connect.go
-@@ -14,6 +14,7 @@ import (
+@@ -15,6 +15,7 @@ import (
  	"time"
  
  	"github.com/cenkalti/backoff/v4"
@@ -678,7 +679,7 @@ index d93b62bb5..e8a887b0e 100644
  	log "github.com/sirupsen/logrus"
  
  	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-@@ -594,6 +595,13 @@ func createEngineConfig(key wgtypes.Key, config *profilemanager.Config, peerConf
+@@ -631,6 +632,13 @@ func createEngineConfig(key wgtypes.Key, config *profilemanager.Config, peerConf
  		ProfileConfig: config,
  	}
  
@@ -693,7 +694,7 @@ index d93b62bb5..e8a887b0e 100644
  		preSharedKey, err := wgtypes.ParseKey(config.PreSharedKey)
  		if err != nil {
 diff --git a/client/internal/engine.go b/client/internal/engine.go
-index 42712da92..47abda3df 100644
+index e1b03e878..d789440fc 100644
 --- a/client/internal/engine.go
 +++ b/client/internal/engine.go
 @@ -17,6 +17,7 @@ import (
@@ -704,7 +705,7 @@ index 42712da92..47abda3df 100644
  	"github.com/pion/ice/v4"
  	"github.com/pion/stun/v3"
  	log "github.com/sirupsen/logrus"
-@@ -152,6 +153,8 @@ type EngineConfig struct {
+@@ -167,6 +168,8 @@ type EngineConfig struct {
  	// StateDir is the directory holding the state file. The sync response
  	// (network map) is serialized here on platforms that persist it to disk.
  	StateDir string
@@ -713,7 +714,7 @@ index 42712da92..47abda3df 100644
  }
  
  // EngineServices holds the external service dependencies required by the Engine.
-@@ -1085,6 +1088,17 @@ func (e *Engine) updateConfig(conf *mgmProto.PeerConfig) error {
+@@ -1287,6 +1290,17 @@ func (e *Engine) updateConfig(conf *mgmProto.PeerConfig) error {
  		return ErrResetConnection
  	}
  
@@ -731,7 +732,7 @@ index 42712da92..47abda3df 100644
  	if conf.GetSshConfig() != nil {
  		if err := e.updateSSH(conf.GetSshConfig()); err != nil {
  			log.Warnf("failed handling SSH server setup: %v", err)
-@@ -1913,13 +1927,14 @@ func (e *Engine) newWgIface() (*iface.WGIface, error) {
+@@ -2139,13 +2153,14 @@ func (e *Engine) newWgIface() (*iface.WGIface, error) {
  	}
  
  	opts := iface.WGIFaceOpts{
@@ -780,10 +781,10 @@ index 1c9c63f78..2ef517cc8 100644
    # Coturn
    coturn:
 diff --git a/management/Dockerfile.multistage b/management/Dockerfile.multistage
-index 619f84615..143cc5c54 100644
+index 619f84615..9ea0cd66b 100644
 --- a/management/Dockerfile.multistage
 +++ b/management/Dockerfile.multistage
-@@ -5,9 +5,11 @@ WORKDIR /app
+@@ -5,11 +5,13 @@ WORKDIR /app
  RUN apt-get update && apt-get install -y gcc libc6-dev && rm -rf /var/lib/apt/lists/*
  
  COPY go.mod go.sum ./
@@ -796,19 +797,21 @@ index 619f84615..143cc5c54 100644
  RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o netbird-mgmt ./management
 -
  FROM ubuntu:24.04
+ RUN apt update && apt install -y ca-certificates && rm -fr /var/cache/apt
+ ENTRYPOINT [ "/go/bin/netbird-mgmt","management"]
 diff --git a/management/internals/shared/grpc/conversion.go b/management/internals/shared/grpc/conversion.go
-index ced982a30..a4c173fed 100644
+index 696d28f5c..14f762005 100644
 --- a/management/internals/shared/grpc/conversion.go
 +++ b/management/internals/shared/grpc/conversion.go
-@@ -21,6 +21,7 @@ import (
- 	nbdns "github.com/netbirdio/netbird/dns"
+@@ -18,6 +18,7 @@ import (
+ 
  	"github.com/netbirdio/netbird/management/internals/controllers/network_map/controller/cache"
  	nbconfig "github.com/netbirdio/netbird/management/internals/server/config"
 +	"github.com/netbirdio/netbird/management/server/amneziawg"
  	nbpeer "github.com/netbirdio/netbird/management/server/peer"
  	"github.com/netbirdio/netbird/management/server/posture"
  	"github.com/netbirdio/netbird/management/server/types"
-@@ -32,12 +33,16 @@ import (
+@@ -28,12 +29,16 @@ import (
  
  const (
  	// deprecatedRemotePeersVersion is the version of Netbird that introduced the NetworkMap.RemotePeers field, deprecated in favor of RemotePeers.
@@ -827,7 +830,7 @@ index ced982a30..a4c173fed 100644
  
  func init() {
  	constraint, err := version.NewConstraint(">= " + deprecatedRemotePeersVersion)
-@@ -45,6 +50,12 @@ func init() {
+@@ -41,6 +46,12 @@ func init() {
  		panic("parse deprecated remote peers version constraint: " + err.Error())
  	}
  	precomputedDeprecatedRemotePeersConstraint = constraint
@@ -839,8 +842,8 @@ index ced982a30..a4c173fed 100644
 +	precomputedAmneziaConfigLegacyConstraint = constraint
  }
  
- func toNetbirdConfig(config *nbconfig.Config, turnCredentials *Token, relayToken *Token, extraSettings *types.ExtraSettings) *proto.NetbirdConfig {
-@@ -125,6 +136,23 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+ // toNetbirdConfig converts the server configuration to the wire representation. It returns
+@@ -131,6 +142,23 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  		sshConfig.JwtConfig = buildJWTConfig(httpConfig, deviceFlowConfig)
  	}
  
@@ -864,7 +867,7 @@ index ced982a30..a4c173fed 100644
  	peerConfig := &proto.PeerConfig{
  		Address:                         fmt.Sprintf("%s/%d", peer.IP.String(), netmask),
  		SshConfig:                       sshConfig,
-@@ -135,6 +163,15 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -141,6 +169,15 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  			Version:      settings.AutoUpdateVersion,
  			AlwaysUpdate: settings.AutoUpdateAlways,
  		},
@@ -880,7 +883,7 @@ index ced982a30..a4c173fed 100644
  	}
  
  	if peer.SupportsIPv6() && peer.IPv6.IsValid() && network.NetV6.IP != nil {
-@@ -148,6 +185,27 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -154,6 +191,27 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  	return peerConfig
  }
  
@@ -1126,10 +1129,10 @@ index 000000000..15320d0ea
 +	return val
 +}
 diff --git a/shared/management/proto/management.proto b/shared/management/proto/management.proto
-index 990a72a63..ffa90b6bd 100644
+index 598f7a579..ac9fb520a 100644
 --- a/shared/management/proto/management.proto
 +++ b/shared/management/proto/management.proto
-@@ -394,6 +394,9 @@ message PeerConfig {
+@@ -411,6 +411,9 @@ message PeerConfig {
  
    // IPv6 overlay address as compact bytes: 16 bytes IP + 1 byte prefix length.
    bytes address_v6 = 9;
@@ -1139,10 +1142,10 @@ index 990a72a63..ffa90b6bd 100644
  }
  
  message AutoUpdateSettings {
-@@ -751,3 +754,36 @@ message StopExposeRequest {
+@@ -1207,3 +1210,36 @@ message UserIDList {
+ message PeerIndexSet {
+   repeated uint32 peer_indexes = 1;
  }
- 
- message StopExposeResponse {}
 +
 +// AmneziaConfig contains AmneziaWG obfuscation parameters.
 +// If not set or all fields are default/zero, standard WireGuard will be used.
