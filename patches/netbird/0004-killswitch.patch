@@ -5,10 +5,28 @@ Subject: [PATCH] client: killswitch
 
 
 diff --git a/client/internal/dns/local/local.go b/client/internal/dns/local/local.go
-index fef35fd..362a98d 100644
+index fef35fd..7fcbeff 100644
 --- a/client/internal/dns/local/local.go
 +++ b/client/internal/dns/local/local.go
-@@ -531,13 +531,14 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
+@@ -177,10 +177,15 @@ func (d *Resolver) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+ 	// Warm before filtering: activation flips a lazily-idle target to connected,
+ 	// which then lets it survive the disconnected-peer filter below.
+ 	d.warmLazyPeers(question, result.records)
+-	result.records = d.filterDisconnectedPeerAnswers(logger, question, result.records)
++	var blocked bool
++	result.records, blocked = d.filterDisconnectedPeerAnswers(logger, question, result.records)
+ 	replyMessage.Authoritative = !result.hasExternalData
+ 	replyMessage.Answer = result.records
+-	replyMessage.Rcode = d.determineRcode(question, result)
++	if blocked {
++		replyMessage.Rcode = dns.RcodeServerFailure
++	} else {
++		replyMessage.Rcode = d.determineRcode(question, result)
++	}
+ 
+ 	if replyMessage.Rcode == dns.RcodeNameError && d.shouldFallthrough(question.Name) {
+ 		d.continueToNext(logger, w, r)
+@@ -531,24 +536,25 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
  // non-mesh upstreams) are never dropped. Non-A/AAAA records pass
  // through untouched.
  //
@@ -17,19 +35,25 @@ index fef35fd..362a98d 100644
 -// hand the client a record that may not respond than NXDOMAIN it
 -// completely when every proxy peer is offline (the upstream may still
 -// be reachable some other way, or the peerstore may be stale).
-+// If all A/AAAA answers point at disconnected peers, return an empty
-+// answer. This is intentional fail-closed behavior: as long as NetBird
-+// is running and the host is known in the local config, traffic must not
-+// fall back to a non-NetBird path just because every matching peer is
-+// currently unavailable. CNAME-only leftovers from a filtered chain are
-+// also suppressed so clients do not resolve the target outside NetBird.
- func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) []dns.RR {
+-func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) []dns.RR {
 -	if len(records) < 2 {
+-		return records
++// If all A/AAAA answers point at disconnected peers, return an empty
++// answer and mark the result as blocked. ServeDNS turns blocked answers
++// into SERVFAIL instead of NXDOMAIN so OS/client DNS caches treat it as
++// a transient outage and retry after the peer reconnects. CNAME-only
++// leftovers from a filtered chain are also suppressed so clients do not
++// resolve the target outside NetBird.
++func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) ([]dns.RR, bool) {
 +	if len(records) == 0 {
- 		return records
++		return records, false
  	}
  	d.mu.RLock()
-@@ -548,7 +549,7 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+ 	checker := d.peerConn
+ 	d.mu.RUnlock()
+ 	if checker == nil {
+-		return records
++		return records, false
  	}
  
  	kept := make([]dns.RR, 0, len(records))
@@ -38,7 +62,7 @@ index fef35fd..362a98d 100644
  	for _, rr := range records {
  		ip, ok := extractRecordAddr(rr)
  		if !ok {
-@@ -560,14 +561,15 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+@@ -560,17 +566,18 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
  			dropped++
  			continue
  		}
@@ -46,14 +70,19 @@ index fef35fd..362a98d 100644
  		kept = append(kept, rr)
  	}
  	if dropped == 0 {
- 		return records
+-		return records
++		return records, false
  	}
 -	if len(kept) == 0 {
 -		logger.Debugf("all %d answers for %s point at disconnected peers; returning the original list", dropped, question.Name)
 -		return records
 +	if keptAddressRecords == 0 {
-+		logger.Debugf("all %d address answers for %s point at disconnected peers; returning an empty answer", dropped, question.Name)
-+		return nil
++		logger.Debugf("all %d address answers for %s point at disconnected peers; returning SERVFAIL", dropped, question.Name)
++		return nil, true
  	}
  	logger.Tracef("dropped %d disconnected-peer answer(s) for %s, returning %d", dropped, question.Name, len(kept))
- 	return kept
+-	return kept
++	return kept, false
+ }
+ 
+ // warmLazyPeers triggers lazy-connection wake-up for the peers a resolved
