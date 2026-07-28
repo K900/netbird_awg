@@ -5,28 +5,10 @@ Subject: [PATCH] client: killswitch
 
 
 diff --git a/client/internal/dns/local/local.go b/client/internal/dns/local/local.go
-index fef35fd..7fcbeff 100644
+index fef35fd..655ab28 100644
 --- a/client/internal/dns/local/local.go
 +++ b/client/internal/dns/local/local.go
-@@ -177,10 +177,15 @@ func (d *Resolver) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
- 	// Warm before filtering: activation flips a lazily-idle target to connected,
- 	// which then lets it survive the disconnected-peer filter below.
- 	d.warmLazyPeers(question, result.records)
--	result.records = d.filterDisconnectedPeerAnswers(logger, question, result.records)
-+	var blocked bool
-+	result.records, blocked = d.filterDisconnectedPeerAnswers(logger, question, result.records)
- 	replyMessage.Authoritative = !result.hasExternalData
- 	replyMessage.Answer = result.records
--	replyMessage.Rcode = d.determineRcode(question, result)
-+	if blocked {
-+		replyMessage.Rcode = dns.RcodeServerFailure
-+	} else {
-+		replyMessage.Rcode = d.determineRcode(question, result)
-+	}
- 
- 	if replyMessage.Rcode == dns.RcodeNameError && d.shouldFallthrough(question.Name) {
- 		d.continueToNext(logger, w, r)
-@@ -531,24 +536,25 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
+@@ -531,13 +531,14 @@ func (d *Resolver) logDNSError(logger *log.Entry, hostname string, qtype uint16,
  // non-mesh upstreams) are never dropped. Non-A/AAAA records pass
  // through untouched.
  //
@@ -35,54 +17,113 @@ index fef35fd..7fcbeff 100644
 -// hand the client a record that may not respond than NXDOMAIN it
 -// completely when every proxy peer is offline (the upstream may still
 -// be reachable some other way, or the peerstore may be stale).
--func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) []dns.RR {
++// If all A/AAAA answers point at disconnected peers, return a sinkhole
++// answer. This is intentional fail-closed behavior: as long as NetBird
++// is running and the host is known in the local config, traffic must not
++// fall back to a non-NetBird path just because every matching peer is
++// currently unavailable. A positive short-lived answer also avoids browser
++// DoH/Secure DNS fallback that can happen on NXDOMAIN or SERVFAIL.
+ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) []dns.RR {
 -	if len(records) < 2 {
--		return records
-+// If all A/AAAA answers point at disconnected peers, return an empty
-+// answer and mark the result as blocked. ServeDNS turns blocked answers
-+// into SERVFAIL instead of NXDOMAIN so OS/client DNS caches treat it as
-+// a transient outage and retry after the peer reconnects. CNAME-only
-+// leftovers from a filtered chain are also suppressed so clients do not
-+// resolve the target outside NetBird.
-+func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns.Question, records []dns.RR) ([]dns.RR, bool) {
 +	if len(records) == 0 {
-+		return records, false
+ 		return records
  	}
  	d.mu.RLock()
- 	checker := d.peerConn
- 	d.mu.RUnlock()
- 	if checker == nil {
--		return records
-+		return records, false
+@@ -566,13 +567,37 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
+ 		return records
  	}
- 
- 	kept := make([]dns.RR, 0, len(records))
--	var dropped int
-+	var dropped, keptAddressRecords int
- 	for _, rr := range records {
- 		ip, ok := extractRecordAddr(rr)
- 		if !ok {
-@@ -560,17 +566,18 @@ func (d *Resolver) filterDisconnectedPeerAnswers(logger *log.Entry, question dns
- 			dropped++
- 			continue
- 		}
-+		keptAddressRecords++
- 		kept = append(kept, rr)
- 	}
- 	if dropped == 0 {
--		return records
-+		return records, false
- 	}
--	if len(kept) == 0 {
+ 	if len(kept) == 0 {
 -		logger.Debugf("all %d answers for %s point at disconnected peers; returning the original list", dropped, question.Name)
 -		return records
-+	if keptAddressRecords == 0 {
-+		logger.Debugf("all %d address answers for %s point at disconnected peers; returning SERVFAIL", dropped, question.Name)
-+		return nil, true
++		logger.Debugf("all %d answers for %s point at disconnected peers; returning sinkhole answer", dropped, question.Name)
++		return sinkholeAnswer(question)
  	}
  	logger.Tracef("dropped %d disconnected-peer answer(s) for %s, returning %d", dropped, question.Name, len(kept))
--	return kept
-+	return kept, false
+ 	return kept
  }
  
++func sinkholeAnswer(question dns.Question) []dns.RR {
++	header := dns.RR_Header{
++		Name:   question.Name,
++		Rrtype: question.Qtype,
++		Class:  question.Qclass,
++		Ttl:    1,
++	}
++
++	switch question.Qtype {
++	case dns.TypeA:
++		return []dns.RR{&dns.A{
++			Hdr: header,
++			A:   net.IPv4zero,
++		}}
++	case dns.TypeAAAA:
++		return []dns.RR{&dns.AAAA{
++			Hdr:  header,
++			AAAA: net.IPv6zero,
++		}}
++	default:
++		return nil
++	}
++}
++
  // warmLazyPeers triggers lazy-connection wake-up for the peers a resolved
+ // answer points at and waits briefly for one to connect, so the caller's first
+ // request doesn't race the connection establishment. Warm-up is scoped to
+diff --git a/client/internal/routemanager/dnsinterceptor/handler.go b/client/internal/routemanager/dnsinterceptor/handler.go
+index b784cc2..2b4022a 100644
+--- a/client/internal/routemanager/dnsinterceptor/handler.go
++++ b/client/internal/routemanager/dnsinterceptor/handler.go
+@@ -283,15 +283,50 @@ func (d *DnsInterceptor) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+ }
+ 
+ func (d *DnsInterceptor) writeDNSError(w dns.ResponseWriter, r *dns.Msg, logger *log.Entry, reason string) {
+-	logger.Warnf("failed to query upstream for domain=%s: %s", r.Question[0].Name, reason)
++	logger.Warnf("failed to query upstream for domain=%s: %s; returning sinkhole answer", r.Question[0].Name, reason)
+ 
+-	resp := new(dns.Msg)
+-	resp.SetRcode(r, dns.RcodeServerFailure)
++	resp := sinkholeResponse(r)
++	if resp == nil {
++		resp = new(dns.Msg)
++		resp.SetRcode(r, dns.RcodeServerFailure)
++	}
+ 	if err := w.WriteMsg(resp); err != nil {
+ 		logger.Errorf("failed to write DNS error response: %v", err)
+ 	}
+ }
+ 
++func sinkholeResponse(r *dns.Msg) *dns.Msg {
++	if len(r.Question) == 0 {
++		return nil
++	}
++
++	question := r.Question[0]
++	header := dns.RR_Header{
++		Name:   question.Name,
++		Rrtype: question.Qtype,
++		Class:  question.Qclass,
++		Ttl:    1,
++	}
++
++	resp := new(dns.Msg)
++	resp.SetReply(r)
++	switch question.Qtype {
++	case dns.TypeA:
++		resp.Answer = []dns.RR{&dns.A{
++			Hdr: header,
++			A:   net.IPv4zero,
++		}}
++	case dns.TypeAAAA:
++		resp.Answer = []dns.RR{&dns.AAAA{
++			Hdr:  header,
++			AAAA: net.IPv6zero,
++		}}
++	default:
++		return nil
++	}
++	return resp
++}
++
+ func (d *DnsInterceptor) getUpstreamIP(peerKey string) (netip.Addr, error) {
+ 	peerAllowedIP, exists := d.peerStore.AllowedIP(peerKey)
+ 	if !exists {
