@@ -211,7 +211,6 @@ jobs:
           PATH=$PATH:$(go env GOPATH)/bin bash -x build-android-lib.sh ${NETBIRD_RELEASE_TAG}
 
       - name: Prepare Android signing key
-        if: ${{ env.RELEASE_MODE == 'true' }}
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -225,7 +224,6 @@ jobs:
           echo "NETBIRD_UPLOAD_STORE_FILE=${RUNNER_TEMP}/android-signing/netbird-awg-release.p12" >> "$GITHUB_ENV"
 
       - name: Build signed APK
-        if: ${{ env.RELEASE_MODE == 'true' }}
         shell: bash
         env:
           NETBIRD_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -236,13 +234,6 @@ jobs:
             echo "[error] Android signing secrets are not fully set" >&2
             exit 1
           fi
-          cd workdir/repos/android
-          ./gradlew --no-daemon assembleRelease -PversionName="${NETBIRD_RELEASE_TAG}" -PversionCode="${{ github.run_number }}"
-
-      - name: Build unsigned APK
-        if: ${{ env.RELEASE_MODE != 'true' }}
-        shell: bash
-        run: |
           cd workdir/repos/android
           ./gradlew --no-daemon assembleRelease -PversionName="${NETBIRD_RELEASE_TAG}" -PversionCode="${{ github.run_number }}"
 
