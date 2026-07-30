@@ -499,3 +499,124 @@ index 877ad9690..a94272c1d 100644
 +		barrier.Close()
 +	}
 +}
+diff --git a/client/server/sleep_barrier_darwin.go b/client/server/sleep_barrier_darwin.go
+new file mode 100644
+index 000000000..bf36c5c84
+--- /dev/null
++++ b/client/server/sleep_barrier_darwin.go
+@@ -0,0 +1,98 @@
++//go:build darwin && !ios
++
++package server
++
++import (
++	"fmt"
++	"net/netip"
++	"os"
++	"os/exec"
++	"strings"
++
++	log "github.com/sirupsen/logrus"
++
++	"github.com/netbirdio/netbird/client/internal/peer"
++	"github.com/netbirdio/netbird/shared/management/domain"
++)
++
++const (
++	wakeBarrierAnchor = "com.apple/netbird_awg_killswitch"
++	wakeBarrierTable  = "netbird_awg_kill"
++)
++
++type pfWakeRouteBarrier struct{}
++
++func (pfWakeRouteBarrier) Close() {
++	if err := cleanupWakeRouteBarrierArtifacts(); err != nil {
++		log.Debugf("cleanup wake route killswitch barrier: %v", err)
++	}
++}
++
++func (s *Server) installWakeRouteBarrier() (wakeRouteBarrier, bool) {
++	prefixes := resolvedRoutePrefixes(s.statusRecorder.GetResolvedDomainsStates())
++	if len(prefixes) == 0 {
++		return nil, true
++	}
++
++	rules := pfRules(prefixes)
++	file, err := os.CreateTemp("", "netbird-awg-pf-*.conf")
++	if err != nil {
++		log.Warnf("create wake route killswitch barrier rules: %v", err)
++		return nil, false
++	}
++	path := file.Name()
++	defer os.Remove(path)
++
++	if _, err := file.WriteString(rules); err != nil {
++		_ = file.Close()
++		log.Warnf("write wake route killswitch barrier rules: %v", err)
++		return nil, false
++	}
++	if err := file.Close(); err != nil {
++		log.Warnf("close wake route killswitch barrier rules: %v", err)
++		return nil, false
++	}
++
++	if err := exec.Command("pfctl", "-a", wakeBarrierAnchor, "-f", path).Run(); err != nil {
++		log.Warnf("install wake route killswitch barrier: %v", err)
++		return nil, false
++	}
++
++	log.Infof("installed wake route killswitch barrier for %d prefixes", len(prefixes))
++	return pfWakeRouteBarrier{}, true
++}
++
++func cleanupWakeRouteBarrierArtifacts() error {
++	if err := exec.Command("pfctl", "-a", wakeBarrierAnchor, "-F", "all").Run(); err != nil {
++		return fmt.Errorf("flush pf anchor %s: %w", wakeBarrierAnchor, err)
++	}
++	return nil
++}
++
++func resolvedRoutePrefixes(states map[domain.Domain]peer.ResolvedDomainInfo) []netip.Prefix {
++	prefixes := make([]netip.Prefix, 0)
++	seen := make(map[netip.Prefix]struct{})
++	for _, info := range states {
++		for _, prefix := range info.Prefixes {
++			if _, ok := seen[prefix]; ok {
++				continue
++			}
++			seen[prefix] = struct{}{}
++			prefixes = append(prefixes, prefix)
++		}
++	}
++	return prefixes
++}
++
++func pfRules(prefixes []netip.Prefix) string {
++	items := make([]string, 0, len(prefixes))
++	for _, prefix := range prefixes {
++		items = append(items, prefix.String())
++	}
++
++	return fmt.Sprintf("table <%s> persist { %s }\nblock drop out quick to <%s>\n",
++		wakeBarrierTable,
++		strings.Join(items, ", "),
++		wakeBarrierTable,
++	)
++}
+diff --git a/client/server/sleep_barrier_other.go b/client/server/sleep_barrier_other.go
+new file mode 100644
+index 000000000..0f0691066
+--- /dev/null
++++ b/client/server/sleep_barrier_other.go
+@@ -0,0 +1,11 @@
++//go:build !darwin || ios
++
++package server
++
++func (s *Server) installWakeRouteBarrier() (wakeRouteBarrier, bool) {
++	return nil, true
++}
++
++func cleanupWakeRouteBarrierArtifacts() error {
++	return nil
++}
