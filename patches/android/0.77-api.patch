@@ -1,0 +1,33 @@
+From f5eb12267c342c3a631c71353e07223f5b9397f9 Mon Sep 17 00:00:00 2001
+From: Viktor Liu <17948409+lixmal@users.noreply.github.com>
+Date: Mon, 10 Aug 2026 19:54:38 +0900
+Subject: [PATCH] Pass an anonymization level to the debug bundle SDK call
+ (#234)
+
+---
+ netbird                                                     | 2 +-
+ tool/src/main/java/io/netbird/client/tool/EngineRunner.java | 4 +++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/netbird b/netbird
+index 2ce63236..5584f8ef 160000
+--- a/netbird
++++ b/netbird
+@@ -1 +1 @@
+-Subproject commit 2ce632360241d850eaef4fe4dd680d88ec19dddc
++Subproject commit 5584f8ef0a8dbd7d1db49655914d7c2c39b431cf
+diff --git a/tool/src/main/java/io/netbird/client/tool/EngineRunner.java b/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
+index d6420d6f..4719e01c 100644
+--- a/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
++++ b/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
+@@ -327,7 +327,9 @@ public String debugBundle(boolean anonymize) throws Exception {
+         String cacheDir = context.getCacheDir().getAbsolutePath();
+         var platformFiles = new AndroidPlatformFiles(configPath, statePath, cacheDir);
+         try {
+-            return goClient.debugBundle(platformFiles, anonymize);
++            // The strict level stays unused until the troubleshoot screen
++            // grows an option for it.
++            return goClient.debugBundle(platformFiles, anonymize, Android.AnonymizeLevelDefault);
+         } catch (Exception e) {
+             Log.e(LOGTAG, "goClient error", e);
+             throw e;

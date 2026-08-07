@@ -5,7 +5,7 @@ Subject: [PATCH] client/updater: update download URLs to point to fork
 
 
 diff --git a/client/internal/updater/installer/installer_run_darwin.go b/client/internal/updater/installer/installer_run_darwin.go
-index 248a404aa..91d70c3c1 100644
+index 5650bc769..b8a7fe74e 100644
 --- a/client/internal/updater/installer/installer_run_darwin.go
 +++ b/client/internal/updater/installer/installer_run_darwin.go
 @@ -22,7 +22,7 @@ const (
@@ -18,12 +18,12 @@ index 248a404aa..91d70c3c1 100644
  
  var (
 diff --git a/client/internal/updater/installer/installer_run_windows.go b/client/internal/updater/installer/installer_run_windows.go
-index 70c7e32cf..ec429c76a 100644
+index b2ecf3299..5b3ffffcb 100644
 --- a/client/internal/updater/installer/installer_run_windows.go
 +++ b/client/internal/updater/installer/installer_run_windows.go
-@@ -22,8 +22,8 @@ const (
+@@ -29,8 +29,8 @@ const (
  
- 	msiLogFile = "msi.log"
+ 	processExitWait = 10 * time.Second
  
 -	msiDownloadURL = "https://github.com/netbirdio/netbird/releases/download/v%version/netbird_installer_%version_windows_%arch.msi"
 -	exeDownloadURL = "https://github.com/netbirdio/netbird/releases/download/v%version/netbird_installer_%version_windows_%arch.exe"

@@ -4,19 +4,20 @@ Date: Mon, 27 Jul 2026 00:00:00 +0300
 Subject: [PATCH] client: killswitch
 
 diff --git a/client/internal/connect.go b/client/internal/connect.go
-index 87126b222..576c31162 100644
+index bb3fa435d..e01ae2bc9 100644
 --- a/client/internal/connect.go
 +++ b/client/internal/connect.go
-@@ -70,6 +70,8 @@ type ConnectClient struct {
- 	updateManager *updater.Manager
- 
- 	persistSyncResponse bool
+@@ -82,6 +82,9 @@ type ConnectClient struct {
+ 	// sweeper cuts the management, signal and relay connections on network
+ 	// change; nil disables it.
+ 	sweeper *netsweep.Sweeper
++
 +	beforeClientRestart func(reason string) bool
 +	onEngineStarted     func()
  }
  
- func NewConnectClient(
-@@ -95,6 +97,11 @@ func (c *ConnectClient) SetUpdateManager(um *updater.Manager) {
+ // ConnectClientOption configures optional ConnectClient behavior.
+@@ -126,6 +129,11 @@ func (c *ConnectClient) SetUpdateManager(um *updater.Manager) {
  	c.updateManager = um
  }
  
@@ -28,15 +29,35 @@ index 87126b222..576c31162 100644
  // Run with main logic.
  func (c *ConnectClient) Run(runningChan chan struct{}, logPath string) error {
  	if androidRunOverride != nil {
-@@ -421,6 +428,7 @@ func (c *ConnectClient) run(mobileDependency MobileDependency, runningChan chan
- 			UpdateManager:  c.updateManager,
- 			ClientMetrics:  c.clientMetrics,
- 			MetricsCtx:     c.ctx,
+@@ -455,16 +463,17 @@ func (c *ConnectClient) run(mobileDependency MobileDependency, runningChan chan
+ 
+ 		c.engineMutex.Lock()
+ 		engine := NewEngine(engineCtx, cancel, engineConfig, EngineServices{
+-			SignalClient:   signalClient,
+-			MgmClient:      mgmClient,
+-			RelayManager:   relayManager,
+-			StatusRecorder: c.statusRecorder,
+-			Checks:         checks,
+-			StateManager:   stateManager,
+-			UpdateManager:  c.updateManager,
+-			ClientMetrics:  c.clientMetrics,
+-			MetricsCtx:     c.ctx,
+-			NetState:       c.netState,
++			SignalClient:        signalClient,
++			MgmClient:           mgmClient,
++			RelayManager:        relayManager,
++			StatusRecorder:      c.statusRecorder,
++			Checks:              checks,
++			StateManager:        stateManager,
++			UpdateManager:       c.updateManager,
++			ClientMetrics:       c.clientMetrics,
++			MetricsCtx:          c.ctx,
++			NetState:            c.netState,
 +			BeforeClientRestart: c.beforeClientRestart,
  		}, mobileDependency)
  		engine.SetSyncResponsePersistence(c.persistSyncResponse)
  		c.engine = engine
-@@ -445,6 +453,9 @@ func (c *ConnectClient) run(mobileDependency MobileDependency, runningChan chan
+@@ -489,6 +498,9 @@ func (c *ConnectClient) run(mobileDependency MobileDependency, runningChan chan
  				close(runningChan)
  			}
  		}
@@ -112,34 +133,92 @@ index fef35fd41..655ab283b 100644
  // answer points at and waits briefly for one to connect, so the caller's first
  // request doesn't race the connection establishment. Warm-up is scoped to
 diff --git a/client/internal/engine.go b/client/internal/engine.go
-index 617892e43..1e69c6d8d 100644
+index 2e5670d12..9f16c6df0 100644
 --- a/client/internal/engine.go
 +++ b/client/internal/engine.go
-@@ -180,6 +180,7 @@ type EngineServices struct {
- 	UpdateManager  *updater.Manager
- 	ClientMetrics  *metrics.ClientMetrics
+@@ -187,7 +187,8 @@ type EngineServices struct {
  	MetricsCtx     context.Context
+ 	// NetState gates the reconnection loops on OS-reported network
+ 	// availability; nil disables gating.
+-	NetState *netstate.State
++	NetState            *netstate.State
 +	BeforeClientRestart func(reason string) bool
  }
  
  // Engine is a mechanism responsible for reacting on Signal and Management stream events and managing connections to the remote peers.
-@@ -211,6 +212,7 @@ type Engine struct {
+@@ -221,8 +222,9 @@ type Engine struct {
+ 	TURNs    []*stun.URI
+ 	stunTurn icemaker.StunTurn
  
- 	clientCtx    context.Context
- 	clientCancel context.CancelFunc
+-	clientCtx    context.Context
+-	clientCancel context.CancelFunc
++	clientCtx           context.Context
++	clientCancel        context.CancelFunc
 +	beforeClientRestart func(reason string) bool
  
  	ctx    context.Context
  	cancel context.CancelFunc
-@@ -348,6 +350,7 @@ func NewEngine(
- 		clientMetrics:      services.ClientMetrics,
- 		metricsCtx:         services.MetricsCtx,
- 		updateManager:      services.UpdateManager,
+@@ -336,32 +338,33 @@ func NewEngine(
+ 	// than in Start.
+ 	ctx, cancel := context.WithCancel(clientCtx)
+ 	engine := &Engine{
+-		clientCtx:          clientCtx,
+-		clientCancel:       clientCancel,
+-		ctx:                ctx,
+-		cancel:             cancel,
+-		signal:             services.SignalClient,
+-		signaler:           peer.NewSignaler(services.SignalClient, config.WgPrivateKey),
+-		mgmClient:          services.MgmClient,
+-		relayManager:       services.RelayManager,
+-		peerStore:          peerstore.NewConnStore(),
+-		syncMsgMux:         &sync.Mutex{},
+-		config:             config,
+-		mobileDep:          mobileDep,
+-		netState:           services.NetState,
+-		STUNs:              []*stun.URI{},
+-		TURNs:              []*stun.URI{},
+-		networkSerial:      0,
+-		statusRecorder:     services.StatusRecorder,
+-		stateManager:       services.StateManager,
+-		portForwardManager: portforward.NewManager(),
+-		checks:             services.Checks,
+-		probeStunTurn:      relay.NewStunTurnProbe(relay.DefaultCacheTTL),
+-		jobExecutor:        jobexec.NewExecutor(),
+-		clientMetrics:      services.ClientMetrics,
+-		metricsCtx:         services.MetricsCtx,
+-		updateManager:      services.UpdateManager,
+-		syncStoreDir:       config.StateDir,
++		clientCtx:           clientCtx,
++		clientCancel:        clientCancel,
++		ctx:                 ctx,
++		cancel:              cancel,
++		signal:              services.SignalClient,
++		signaler:            peer.NewSignaler(services.SignalClient, config.WgPrivateKey),
++		mgmClient:           services.MgmClient,
++		relayManager:        services.RelayManager,
++		peerStore:           peerstore.NewConnStore(),
++		syncMsgMux:          &sync.Mutex{},
++		config:              config,
++		mobileDep:           mobileDep,
++		netState:            services.NetState,
++		STUNs:               []*stun.URI{},
++		TURNs:               []*stun.URI{},
++		networkSerial:       0,
++		statusRecorder:      services.StatusRecorder,
++		stateManager:        services.StateManager,
++		portForwardManager:  portforward.NewManager(),
++		checks:              services.Checks,
++		probeStunTurn:       relay.NewStunTurnProbe(relay.DefaultCacheTTL),
++		jobExecutor:         jobexec.NewExecutor(),
++		clientMetrics:       services.ClientMetrics,
++		metricsCtx:          services.MetricsCtx,
++		updateManager:       services.UpdateManager,
 +		beforeClientRestart: services.BeforeClientRestart,
- 		syncStoreDir:       config.StateDir,
++		syncStoreDir:        config.StateDir,
  	}
  	// sessionWatcher keeps the SubscribeStatus consumers in sync with the
-@@ -617,7 +620,9 @@ func (e *Engine) Start(netbirdConfig *mgmProto.NetbirdConfig, mgmtURL *url.URL)
+ 	// session expiry deadline. Deadline-change ticks come for free via
+@@ -623,7 +626,9 @@ func (e *Engine) Start(netbirdConfig *mgmProto.NetbirdConfig, mgmtURL *url.URL)
  	}
  
  	if filteredDevice := e.wgInterface.GetDevice(); filteredDevice != nil {
@@ -150,7 +229,7 @@ index 617892e43..1e69c6d8d 100644
  	}
  
  	if err := e.createFirewall(); err != nil {
-@@ -703,7 +708,7 @@ func (e *Engine) Start(netbirdConfig *mgmProto.NetbirdConfig, mgmtURL *url.URL)
+@@ -709,7 +714,7 @@ func (e *Engine) Start(netbirdConfig *mgmProto.NetbirdConfig, mgmtURL *url.URL)
  
  		if shouldRestart, err := e.wgIfaceMonitor.Start(e.ctx, wgIfaceName); shouldRestart {
  			log.Infof("WireGuard interface monitor: %s, restarting engine", err)
@@ -159,7 +238,7 @@ index 617892e43..1e69c6d8d 100644
  		} else if err != nil {
  			log.Warnf("WireGuard interface monitor: %s", err)
  		}
-@@ -2372,15 +2377,19 @@ func (e *Engine) RunHealthProbes(ctx context.Context, waitForResult bool) bool {
+@@ -2356,15 +2361,19 @@ func (e *Engine) RunHealthProbes(ctx context.Context, waitForResult bool) bool {
  // triggerClientRestart triggers a full client restart by cancelling the client context.
  // Note: This does NOT just restart the engine - it cancels the entire client context,
  // which causes the connect client's retry loop to create a completely new engine.
@@ -181,7 +260,7 @@ index 617892e43..1e69c6d8d 100644
  	CtxGetState(e.ctx).Set(StatusConnecting)
  	_ = CtxGetState(e.ctx).Wrap(ErrResetConnection)
  	log.Infof("cancelling client context, engine will be recreated")
-@@ -2407,7 +2416,7 @@ func (e *Engine) startNetworkMonitor() {
+@@ -2391,7 +2400,7 @@ func (e *Engine) startNetworkMonitor() {
  		}
  
  		log.Infof("Network monitor: detected network change, triggering client restart")
@@ -227,7 +306,7 @@ index c691c54f8..101e958e5 100644
  		if err := w.removeAllowedIPs(w.currentChosen, rsn); err != nil {
  			return fmt.Errorf("remove obsolete: %w", err)
 diff --git a/client/internal/routemanager/dnsinterceptor/handler.go b/client/internal/routemanager/dnsinterceptor/handler.go
-index f92300bfd..a0dfa83ff 100644
+index d20f4b944..330837554 100644
 --- a/client/internal/routemanager/dnsinterceptor/handler.go
 +++ b/client/internal/routemanager/dnsinterceptor/handler.go
 @@ -283,15 +283,50 @@ func (d *DnsInterceptor) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
@@ -285,10 +364,10 @@ index f92300bfd..a0dfa83ff 100644
  	peerAllowedIP, exists := d.peerStore.AllowedIP(peerKey)
  	if !exists {
 diff --git a/client/server/server.go b/client/server/server.go
-index db5909272..b08fc0a03 100644
+index f33e19075..04e28111a 100644
 --- a/client/server/server.go
 +++ b/client/server/server.go
-@@ -122,7 +122,10 @@ type Server struct {
+@@ -125,7 +125,10 @@ type Server struct {
  	activeCapture    *capture.Session
  	networksDisabled bool
  
@@ -300,7 +379,7 @@ index db5909272..b08fc0a03 100644
  
  	// mdmTicker periodically re-reads the OS-native MDM policy and triggers
  	// an engine restart when the policy changes. Launched once by Start;
-@@ -865,7 +868,11 @@ func (s *Server) Up(callerCtx context.Context, msg *proto.UpRequest) (*proto.UpR
+@@ -918,7 +921,11 @@ func (s *Server) Up(callerCtx context.Context, msg *proto.UpRequest) (*proto.UpR
  		}
  		s.mutex.Unlock()
  
@@ -313,7 +392,7 @@ index db5909272..b08fc0a03 100644
  	}
  	if err := RestoreResidualState(callerCtx, s.profileManager.GetStatePath()); err != nil {
  		log.Warnf(errRestoreResidualState, err)
-@@ -966,7 +973,11 @@ func (s *Server) Up(callerCtx context.Context, msg *proto.UpRequest) (*proto.UpR
+@@ -1019,7 +1026,11 @@ func (s *Server) Up(callerCtx context.Context, msg *proto.UpRequest) (*proto.UpR
  	if msg.GetAsync() {
  		return &proto.UpResponse{}, nil
  	}
@@ -326,7 +405,7 @@ index db5909272..b08fc0a03 100644
  }
  
  // todo: handle potential race conditions
-@@ -1191,6 +1202,10 @@ func (s *Server) Down(ctx context.Context, _ *proto.DownRequest) (*proto.DownRes
+@@ -1244,6 +1255,10 @@ func (s *Server) Down(ctx context.Context, _ *proto.DownRequest) (*proto.DownRes
  
  func (s *Server) cleanupConnection() error {
  	s.oauthAuthFlow = oauthAuthFlow{}
@@ -337,7 +416,7 @@ index db5909272..b08fc0a03 100644
  
  	if s.actCancel == nil {
  		return ErrServiceNotUp
-@@ -2301,6 +2316,7 @@ func (s *Server) connect(ctx context.Context, config *profilemanager.Config, sta
+@@ -2350,6 +2365,7 @@ func (s *Server) connect(ctx context.Context, config *profilemanager.Config, sta
  	client := internal.NewConnectClient(ctx, config, statusRecorder)
  	client.SetUpdateManager(s.updateManager)
  	client.SetSyncResponsePersistence(s.persistSyncResponse)
@@ -346,7 +425,7 @@ index db5909272..b08fc0a03 100644
  	s.mutex.Lock()
  	s.connectClient = client
 diff --git a/client/server/sleep.go b/client/server/sleep.go
-index 877ad9690..a94272c1d 100644
+index 877ad9690..26d62dea0 100644
 --- a/client/server/sleep.go
 +++ b/client/server/sleep.go
 @@ -4,6 +4,7 @@ import (
@@ -544,7 +623,7 @@ index 877ad9690..a94272c1d 100644
 +}
 diff --git a/client/server/sleep_barrier_darwin.go b/client/server/sleep_barrier_darwin.go
 new file mode 100644
-index 000000000..bf36c5c84
+index 000000000..ce7d96d92
 --- /dev/null
 +++ b/client/server/sleep_barrier_darwin.go
 @@ -0,0 +1,111 @@
