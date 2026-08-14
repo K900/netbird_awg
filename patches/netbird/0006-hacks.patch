@@ -1,0 +1,173 @@
+diff --git a/client/iface/bind/ice_bind.go b/client/iface/bind/ice_bind.go
+index 2d35b9c6f..4d19ca62d 100644
+--- a/client/iface/bind/ice_bind.go
++++ b/client/iface/bind/ice_bind.go
+@@ -19,6 +19,7 @@ import (
+ 
+ 	"github.com/netbirdio/netbird/client/iface/udpmux"
+ 	"github.com/netbirdio/netbird/client/iface/wgaddr"
++	"github.com/netbirdio/netbird/client/internal/amneziawg"
+ 	nbnet "github.com/netbirdio/netbird/client/net"
+ )
+ 
+@@ -68,9 +69,11 @@ type ICEBind struct {
+ 	udpMux   *udpmux.UniversalUDPMuxDefault
+ 	ipv4Conn *net.UDPConn
+ 	ipv6Conn *net.UDPConn
++
++	amneziaConfig amneziawg.AmneziaConfig
+ }
+ 
+-func NewICEBind(transportNet transport.Net, address wgaddr.Address, mtu uint16) *ICEBind {
++func NewICEBind(transportNet transport.Net, address wgaddr.Address, mtu uint16, amneziaConfig amneziawg.AmneziaConfig) *ICEBind {
+ 	b, _ := wgConn.NewStdNetBind().(*wgConn.StdNetBind)
+ 	ib := &ICEBind{
+ 		StdNetBind:       b,
+@@ -82,6 +85,7 @@ func NewICEBind(transportNet transport.Net, address wgaddr.Address, mtu uint16)
+ 		closedChan:       make(chan struct{}),
+ 		closed:           true,
+ 		activityRecorder: NewActivityRecorder(),
++		amneziaConfig:    amneziaConfig,
+ 	}
+ 
+ 	rc := receiverCreator{
+@@ -243,7 +247,7 @@ func (s *ICEBind) createReceiverFn(pc wgConn.BatchReader, conn *net.UDPConn, rxO
+ 			}
+ 			addrPort := msg.Addr.(*net.UDPAddr).AddrPort()
+ 
+-			if isTransportPkg(msg.Buffers, msg.N) {
++			if isTransportPkg(msg.Buffers, msg.N, s.amneziaConfig) {
+ 				s.activityRecorder.record(addrPort)
+ 			}
+ 
+@@ -293,7 +297,7 @@ func (s *ICEBind) filterOutStunMessages(buffers [][]byte, n int, addr net.Addr)
+ 		}
+ 		pkt := buffers[i][:n]
+ 
+-		if isWireGuardMsg(pkt) || !stun.IsMessage(pkt) {
++		if !stun.IsMessage(pkt) {
+ 			continue
+ 		}
+ 
+@@ -347,7 +351,7 @@ func (c *ICEBind) receiveRelayed(buffs [][]byte, sizes []int, eps []wgConn.Endpo
+ 		sizes[0] = len(msg.Buffer)
+ 		eps[0] = wgConn.Endpoint(msg.Endpoint)
+ 
+-		if isTransportPkg(buffs, sizes[0]) {
++		if isTransportPkg(buffs, sizes[0], c.amneziaConfig) {
+ 			if ep, ok := eps[0].(*Endpoint); ok {
+ 				c.activityRecorder.record(ep.AddrPort)
+ 			}
+@@ -380,23 +384,26 @@ func putMessages(msgs *[]ipv6.Message, msgsPool *sync.Pool) {
+ // message overlaps the receiver index: a session whose index happens to equal the cookie
+ // would otherwise have all of its inbound data misrouted to the STUN handler until the
+ // next rekey.
+-func isWireGuardMsg(pkt []byte) bool {
++func isWireGuardMsg(pkt []byte, amneziaConfig amneziawg.AmneziaConfig) bool {
+ 	if len(pkt) < wgMinMsgSize {
+ 		return false
+ 	}
+ 
+ 	msgType := binary.LittleEndian.Uint32(pkt[:4])
+-	return msgType >= wgMsgTypeHandshakeInitiation && msgType <= wgMsgTypeTransport
++	return ((msgType >= amneziaConfig.H1Min && msgType <= amneziaConfig.H1Max) ||
++		(msgType >= amneziaConfig.H2Min && msgType <= amneziaConfig.H2Max) ||
++		(msgType >= amneziaConfig.H3Min && msgType <= amneziaConfig.H3Max) ||
++		(msgType >= amneziaConfig.H4Min && msgType <= amneziaConfig.H4Max))
+ }
+ 
+ // isTransportPkg reports whether the packet is WireGuard transport data carrying a
+ // payload, which is what counts as peer activity. A keepalive holds no payload and is
+ // exactly wgMinMsgSize bytes.
+-func isTransportPkg(buffers [][]byte, n int) bool {
++func isTransportPkg(buffers [][]byte, n int, amneziaConfig amneziawg.AmneziaConfig) bool {
+ 	if n < 4 || n > len(buffers[0]) {
+ 		return false
+ 	}
+ 
+ 	msgType := binary.LittleEndian.Uint32(buffers[0][:4])
+-	return msgType == wgMsgTypeTransport && n > wgMinMsgSize
++	return msgType >= amneziaConfig.H4Min && msgType <= amneziaConfig.H4Max && n > wgMinMsgSize
+ }
+diff --git a/client/iface/bind/ice_bind_test.go b/client/iface/bind/ice_bind_test.go
+index 0b8db7640..de796538b 100644
+--- a/client/iface/bind/ice_bind_test.go
++++ b/client/iface/bind/ice_bind_test.go
+@@ -15,6 +15,7 @@ import (
+ 	"golang.org/x/net/ipv6"
+ 
+ 	"github.com/netbirdio/netbird/client/iface/wgaddr"
++	"github.com/netbirdio/netbird/client/internal/amneziawg"
+ )
+ 
+ func TestICEBind_CreatesReceiverForBothIPv4AndIPv6(t *testing.T) {
+@@ -289,7 +290,7 @@ func setupICEBind(t *testing.T) *ICEBind {
+ 		IP:      netip.MustParseAddr("100.64.0.1"),
+ 		Network: netip.MustParsePrefix("100.64.0.0/10"),
+ 	}
+-	return NewICEBind(transportNet, address, 1280)
++	return NewICEBind(transportNet, address, 1280, amneziawg.AmneziaConfig{})
+ }
+ 
+ func createDualStackConns(t *testing.T) (*net.UDPConn, *net.UDPConn) {
+diff --git a/client/iface/iface_new.go b/client/iface/iface_new.go
+index ae9f5c379..7e05b55c3 100644
+--- a/client/iface/iface_new.go
++++ b/client/iface/iface_new.go
+@@ -11,7 +11,7 @@ import (
+ 
+ // NewWGIFace Creates a new WireGuard interface instance
+ func NewWGIFace(opts WGIFaceOpts) (*WGIface, error) {
+-	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU)
++	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU, opts.AmneziaConfig)
+ 
+ 	var tun WGTunDevice
+ 	if netstack.IsEnabled() {
+diff --git a/client/iface/iface_new_android.go b/client/iface/iface_new_android.go
+index eda967d96..964cb07f2 100644
+--- a/client/iface/iface_new_android.go
++++ b/client/iface/iface_new_android.go
+@@ -9,7 +9,7 @@ import (
+ 
+ // NewWGIFace Creates a new WireGuard interface instance
+ func NewWGIFace(opts WGIFaceOpts) (*WGIface, error) {
+-	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU)
++	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU, opts.AmneziaConfig)
+ 
+ 	if netstack.IsEnabled() {
+ 		wgIFace := &WGIface{
+diff --git a/client/iface/iface_new_ios.go b/client/iface/iface_new_ios.go
+index 48278c693..0ee2962a1 100644
+--- a/client/iface/iface_new_ios.go
++++ b/client/iface/iface_new_ios.go
+@@ -10,7 +10,7 @@ import (
+ 
+ // NewWGIFace Creates a new WireGuard interface instance
+ func NewWGIFace(opts WGIFaceOpts) (*WGIface, error) {
+-	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU)
++	iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU, opts.AmneziaConfig)
+ 
+ 	wgIFace := &WGIface{
+ 		tun:            device.NewTunDevice(opts.IFaceName, opts.Address, opts.WGPort, opts.WGPrivKey, opts.MTU, iceBind, opts.MobileArgs.TunFd, opts.AmneziaConfig),
+diff --git a/client/iface/iface_new_linux.go b/client/iface/iface_new_linux.go
+index 68083309d..fc33dd684 100644
+--- a/client/iface/iface_new_linux.go
++++ b/client/iface/iface_new_linux.go
+@@ -14,7 +14,7 @@ import (
+ // NewWGIFace Creates a new WireGuard interface instance
+ func NewWGIFace(opts WGIFaceOpts) (*WGIface, error) {
+ 	if netstack.IsEnabled() {
+-		iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU)
++		iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU, opts.AmneziaConfig)
+ 		return &WGIface{
+ 			tun:            device.NewNetstackDevice(opts.IFaceName, opts.Address, opts.WGPort, opts.WGPrivKey, opts.MTU, iceBind, netstack.ListenAddr(), opts.AmneziaConfig),
+ 			userspaceBind:  true,
+@@ -30,7 +30,7 @@ func NewWGIFace(opts WGIFaceOpts) (*WGIface, error) {
+ 	}
+ 
+ 	if device.ModuleTunIsLoaded() {
+-		iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU)
++		iceBind := bind.NewICEBind(opts.TransportNet, opts.Address, opts.MTU, opts.AmneziaConfig)
+ 		return &WGIface{
+ 			tun:            device.NewTunDevice(opts.IFaceName, opts.Address, opts.WGPort, opts.WGPrivKey, opts.MTU, iceBind, opts.AmneziaConfig),
+ 			userspaceBind:  true,
