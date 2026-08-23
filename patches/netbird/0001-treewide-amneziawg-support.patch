@@ -1,9 +1,9 @@
 diff --git a/client/iface/configurer/amnezia_config.go b/client/iface/configurer/amnezia_config.go
 new file mode 100644
-index 000000000..dc9243ca7
+index 000000000..4344e4146
 --- /dev/null
 +++ b/client/iface/configurer/amnezia_config.go
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,32 @@
 +package configurer
 +
 +// AmneziaConfig describes AmneziaWG obfuscation parameters.
@@ -33,9 +33,11 @@ index 000000000..dc9243ca7
 +	GetMaxHandshakeAttempts() (uint32, uint32)
 +	GetContentPaddingAddition() (uint32, uint32)
 +	GetHeaderProtectionKey() [32]byte
++	GetRandomTrailers() bool
++	GetDisableCookies() bool
 +}
 diff --git a/client/iface/configurer/usp.go b/client/iface/configurer/usp.go
-index 0a25c55bc..d1d89fe51 100644
+index 0a25c55bc..2a3078c96 100644
 --- a/client/iface/configurer/usp.go
 +++ b/client/iface/configurer/usp.go
 @@ -42,25 +42,28 @@ type WGUSPConfigurer struct {
@@ -161,7 +163,7 @@ index 0a25c55bc..d1d89fe51 100644
  	}
  
  	if wgCfg.ListenPort != nil {
-@@ -481,6 +490,109 @@ func toWgUserspaceString(wgCfg wgtypes.Config) string {
+@@ -481,6 +490,115 @@ func toWgUserspaceString(wgCfg wgtypes.Config) string {
  	return sb.String()
  }
  
@@ -265,6 +267,12 @@ index 0a25c55bc..d1d89fe51 100644
 +	}
 +	if val := conf.GetHeaderProtectionKey(); len(val) != 0 {
 +		sb.WriteString(fmt.Sprintf("header_protection_key=%s\n", hex.EncodeToString(val[:])))
++	}
++	if val := conf.GetRandomTrailers(); val {
++		sb.WriteString("random_trailers=1")
++	}
++	if val := conf.GetDisableCookies(); val {
++		sb.WriteString("disable_cookies=1")
 +	}
 +}
 +
@@ -614,10 +622,10 @@ index 2465130e6..68083309d 100644
  		}, nil
 diff --git a/client/internal/amneziawg/amneziawg.go b/client/internal/amneziawg/amneziawg.go
 new file mode 100644
-index 000000000..49ec50bfb
+index 000000000..d66659356
 --- /dev/null
 +++ b/client/internal/amneziawg/amneziawg.go
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,213 @@
 +package amneziawg
 +
 +import (
@@ -661,6 +669,8 @@ index 000000000..49ec50bfb
 +	ContentPaddingAdditionMin uint32
 +	ContentPaddingAdditionMax uint32
 +	HeaderProtectionKey       [32]byte
++	RandomTrailers            bool
++	DisableCookies            bool
 +}
 +
 +func (cfg AmneziaConfig) IsEmpty() bool {
@@ -697,7 +707,9 @@ index 000000000..49ec50bfb
 +		cfg.MaxHandshakeAttemptsMax == 0 &&
 +		cfg.ContentPaddingAdditionMin == 0 &&
 +		cfg.ContentPaddingAdditionMax == 0 &&
-+		cfg.HeaderProtectionKey == [32]byte{}
++		cfg.HeaderProtectionKey == [32]byte{} &&
++		!cfg.RandomTrailers &&
++		!cfg.DisableCookies
 +}
 +func (cfg AmneziaConfig) GetJc() int32            { return cfg.Jc }
 +func (cfg AmneziaConfig) GetJmin() int32          { return cfg.Jmin }
@@ -735,6 +747,12 @@ index 000000000..49ec50bfb
 +}
 +func (cfg AmneziaConfig) GetHeaderProtectionKey() [32]byte {
 +	return cfg.HeaderProtectionKey
++}
++func (cfg AmneziaConfig) GetRandomTrailers() bool {
++	return cfg.RandomTrailers
++}
++func (cfg AmneziaConfig) GetDisableCookies() bool {
++	return cfg.DisableCookies
 +}
 +
 +func FromPeerConfig(peerConfig *mgmProto.PeerConfig) AmneziaConfig {
@@ -788,6 +806,8 @@ index 000000000..49ec50bfb
 +		ContentPaddingAdditionMin: config.GetContentPaddingAdditionMin(),
 +		ContentPaddingAdditionMax: config.GetContentPaddingAdditionMax(),
 +		HeaderProtectionKey:       getHeaderProtectionKey(config),
++		RandomTrailers:            config.GetRandomTrailers(),
++		DisableCookies:            config.GetDisableCookies(),
 +	}
 +}
 +
@@ -952,7 +972,7 @@ index 619f84615..491c66ec3 100644
  RUN apt update && apt install -y ca-certificates && rm -fr /var/cache/apt
  ENTRYPOINT [ "/go/bin/netbird-mgmt","management"]
 diff --git a/management/internals/shared/grpc/conversion.go b/management/internals/shared/grpc/conversion.go
-index 74ceb3370..c7c3abc2e 100644
+index 74ceb3370..bb092e73e 100644
 --- a/management/internals/shared/grpc/conversion.go
 +++ b/management/internals/shared/grpc/conversion.go
 @@ -10,6 +10,7 @@ import (
@@ -1003,7 +1023,7 @@ index 74ceb3370..c7c3abc2e 100644
  }
  
  // toNetbirdConfig converts the server configuration to the wire representation. It returns
-@@ -131,6 +143,42 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -131,6 +143,44 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  		sshConfig.JwtConfig = buildJWTConfig(httpConfig, deviceFlowConfig)
  	}
  
@@ -1041,12 +1061,14 @@ index 74ceb3370..c7c3abc2e 100644
 +		ContentPaddingAdditionMin: &amneziawg.Store.ContentPaddingAdditionMin,
 +		ContentPaddingAdditionMax: &amneziawg.Store.ContentPaddingAdditionMax,
 +		HeaderProtectionKey:       amneziawg.Store.HeaderProtectionKey,
++		RandomTrailers:            &amneziawg.Store.RandomTrailers,
++		DisableCookies:            &amneziawg.Store.DisableCookies,
 +	}
 +
  	peerConfig := &proto.PeerConfig{
  		Address:                         fmt.Sprintf("%s/%d", peer.IP.String(), netmask),
  		SshConfig:                       sshConfig,
-@@ -141,6 +189,15 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -141,6 +191,15 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  			Version:      settings.AutoUpdateVersion,
  			AlwaysUpdate: settings.AutoUpdateAlways,
  		},
@@ -1062,7 +1084,7 @@ index 74ceb3370..c7c3abc2e 100644
  	}
  
  	if peer.SupportsIPv6() && peer.IPv6.IsValid() && network.NetV6.IP != nil {
-@@ -154,6 +211,27 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -154,6 +213,27 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
  	return peerConfig
  }
  
@@ -1092,10 +1114,10 @@ index 74ceb3370..c7c3abc2e 100644
  	// whether the target peer supports IPv6. Routes and firewall rules are already
 diff --git a/management/server/amneziawg/amneziawg_env.go b/management/server/amneziawg/amneziawg_env.go
 new file mode 100644
-index 000000000..ee18d31c7
+index 000000000..8a5a6d07b
 --- /dev/null
 +++ b/management/server/amneziawg/amneziawg_env.go
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,169 @@
 +package amneziawg
 +
 +import (
@@ -1129,6 +1151,8 @@ index 000000000..ee18d31c7
 +	envAmneziaMaxHandshakeAttempts   = "NETBIRD_AMNEZIA_MAX_HANDSHAKE_ATTEMPTS"
 +	envAmneziaContentPaddingAddition = "NETBIRD_AMNEZIA_CONTENT_PADDING_ADDITION"
 +	envAmneziaHeaderProtectionKey    = "NETBIRD_AMNEZIA_HEADER_PROTECTION_KEY"
++	envAmneziaRandomTrailers         = "NETBIRD_AMNEZIA_RANDOM_TRAILERS"
++	envAmneziaDisableCookies         = "NETBIRD_AMNEZIA_DISABLE_COOKIES"
 +)
 +
 +type StoreStruct struct {
@@ -1165,6 +1189,8 @@ index 000000000..ee18d31c7
 +	ContentPaddingAdditionMin uint32
 +	ContentPaddingAdditionMax uint32
 +	HeaderProtectionKey       []byte
++	RandomTrailers            bool
++	DisableCookies            bool
 +}
 +
 +var Store StoreStruct
@@ -1178,12 +1204,14 @@ index 000000000..ee18d31c7
 +		S2:                  getI32FromEnv(envAmneziaS2),
 +		S3:                  getU32FromEnv(envAmneziaS3),
 +		S4:                  getU32FromEnv(envAmneziaS4),
-+		I1:                  getStrFromEnv(envAmneziaI1),
-+		I2:                  getStrFromEnv(envAmneziaI2),
-+		I3:                  getStrFromEnv(envAmneziaI3),
-+		I4:                  getStrFromEnv(envAmneziaI4),
-+		I5:                  getStrFromEnv(envAmneziaI5),
++		I1:                  os.Getenv(envAmneziaI1),
++		I2:                  os.Getenv(envAmneziaI2),
++		I3:                  os.Getenv(envAmneziaI3),
++		I4:                  os.Getenv(envAmneziaI4),
++		I5:                  os.Getenv(envAmneziaI5),
 +		HeaderProtectionKey: getKeyFromEnv(envAmneziaHeaderProtectionKey),
++		RandomTrailers:      getBoolFromEnv(envAmneziaRandomTrailers),
++		DisableCookies:      getBoolFromEnv(envAmneziaDisableCookies),
 +	}
 +
 +	Store.H1Min, Store.H1Max = getU32RangeFromEnv(envAmneziaH1)
@@ -1222,16 +1250,8 @@ index 000000000..ee18d31c7
 +	return uint32(getI64FromEnv(name))
 +}
 +
-+func getStrFromEnv(name string) string {
-+	val, ok := os.LookupEnv(name)
-+	if !ok {
-+		return ""
-+	}
-+	return val
-+}
-+
 +func getKeyFromEnv(name string) []byte {
-+	b64 := getStrFromEnv(name)
++	b64 := os.Getenv(name)
 +	if b64 == "" {
 +		return []byte{}
 +	}
@@ -1263,8 +1283,12 @@ index 000000000..ee18d31c7
 +	left, right := getI64RangeFromEnv(name)
 +	return uint32(left), uint32(right)
 +}
++
++func getBoolFromEnv(name string) bool {
++	return os.Getenv(name) == "true"
++}
 diff --git a/shared/management/proto/management.proto b/shared/management/proto/management.proto
-index 598f7a579..3648f77d6 100644
+index 598f7a579..bf80649d3 100644
 --- a/shared/management/proto/management.proto
 +++ b/shared/management/proto/management.proto
 @@ -411,6 +411,9 @@ message PeerConfig {
@@ -1277,7 +1301,7 @@ index 598f7a579..3648f77d6 100644
  }
  
  message AutoUpdateSettings {
-@@ -1207,3 +1210,69 @@ message UserIDList {
+@@ -1207,3 +1210,73 @@ message UserIDList {
  message PeerIndexSet {
    repeated uint32 peer_indexes = 1;
  }
@@ -1346,4 +1370,8 @@ index 598f7a579..3648f77d6 100644
 +
 +  // AWG3 header protection
 +  optional bytes header_protection_key = 33;
++
++  // AWG3.1 additional obfuscation
++  optional bool random_trailers = 34;
++  optional bool disable_cookies = 35;
 +}
