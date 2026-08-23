@@ -1,0 +1,40 @@
+diff --git a/app/src/main/java/io/netbird/client/MainActivity.java b/app/src/main/java/io/netbird/client/MainActivity.java
+--- a/app/src/main/java/io/netbird/client/MainActivity.java
++++ b/app/src/main/java/io/netbird/client/MainActivity.java
+@@ -556,6 +556,10 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
+     }
+ 
+     ConnectionListener connectionListener = new ConnectionListener() {
++        @Override
++        public void onStateChanged(long state) {
++        }
++
+         @Override
+         public synchronized void onAddressChanged(String fqdn, String ip) {
+             lastFqdn = fqdn;
+diff --git a/tool/src/main/java/io/netbird/client/tool/EngineRestarter.java b/tool/src/main/java/io/netbird/client/tool/EngineRestarter.java
+--- a/tool/src/main/java/io/netbird/client/tool/EngineRestarter.java
++++ b/tool/src/main/java/io/netbird/client/tool/EngineRestarter.java
+@@ -233,6 +233,11 @@ class EngineRestarter implements NetworkToggleListener {
+             dropDisconnects = false;
+         }
+ 
++        @Override
++        public void onStateChanged(long state) {
++            delegate.onStateChanged(state);
++        }
++
+         @Override
+         public void onConnecting() {
+             try {
+diff --git a/tool/src/main/java/io/netbird/client/tool/EngineRunner.java b/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
+--- a/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
++++ b/tool/src/main/java/io/netbird/client/tool/EngineRunner.java
+@@ -155,6 +155,7 @@ class EngineRunner {
+             this.connectedObservers = connectedObservers;
+         }
+ 
++        @Override public void onStateChanged(long state) { delegate.onStateChanged(state); }
+         @Override public void onConnecting() { delegate.onConnecting(); }
+         @Override public void onConnected() {
+             delegate.onConnected();
