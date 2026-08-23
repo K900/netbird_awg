@@ -797,7 +797,7 @@ index 000000000..49ec50bfb
 +		return [32]byte{}
 +	}
 +	if len(key) != 32 {
-+		panic("Malformed header protection key")
++		return [32]byte{}
 +	}
 +	return ([32]byte)(key)
 +}

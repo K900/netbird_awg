@@ -30,14 +30,10 @@ index 36ffad1..364b920 100644
  	junk struct {
  		min   atomic.Uint32
  		max   atomic.Uint32
-@@ -341,6 +347,14 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
+@@ -341,6 +347,10 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
  	device.rate.limiter.Init()
  	device.indexTable.Init()
  
-+	if MaxBatchSizeOverride > 0 {
-+		device.batchSizeOverride.Store(int32(MaxBatchSizeOverride))
-+	}
-+
 +	if MaxBatchSizeOverride > 0 {
 +		device.batchSizeOverride.Store(int32(MaxBatchSizeOverride))
 +	}
