@@ -37,7 +37,7 @@ index 000000000..4344e4146
 +	GetDisableCookies() bool
 +}
 diff --git a/client/iface/configurer/usp.go b/client/iface/configurer/usp.go
-index 0a25c55bc..2a3078c96 100644
+index 2be1b861e..3dccc09a3 100644
 --- a/client/iface/configurer/usp.go
 +++ b/client/iface/configurer/usp.go
 @@ -42,25 +42,28 @@ type WGUSPConfigurer struct {
@@ -840,7 +840,7 @@ index 000000000..d66659356
 +	return cfg, true
 +}
 diff --git a/client/internal/connect.go b/client/internal/connect.go
-index ceb39419e..3a75d6112 100644
+index 88d829d2f..520371c7a 100644
 --- a/client/internal/connect.go
 +++ b/client/internal/connect.go
 @@ -15,6 +15,7 @@ import (
@@ -851,7 +851,7 @@ index ceb39419e..3a75d6112 100644
  	log "github.com/sirupsen/logrus"
  
  	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-@@ -638,6 +639,13 @@ func createEngineConfig(key wgtypes.Key, config *profilemanager.Config, peerConf
+@@ -677,6 +678,13 @@ func createEngineConfig(key wgtypes.Key, config *profilemanager.Config, peerConf
  		ProfileConfig: config,
  	}
  
@@ -866,7 +866,7 @@ index ceb39419e..3a75d6112 100644
  		preSharedKey, err := wgtypes.ParseKey(config.PreSharedKey)
  		if err != nil {
 diff --git a/client/internal/engine.go b/client/internal/engine.go
-index f4f47992f..04d147f53 100644
+index 477fba194..978c9f017 100644
 --- a/client/internal/engine.go
 +++ b/client/internal/engine.go
 @@ -17,6 +17,7 @@ import (
@@ -877,7 +877,7 @@ index f4f47992f..04d147f53 100644
  	"github.com/pion/ice/v4"
  	"github.com/pion/stun/v3"
  	log "github.com/sirupsen/logrus"
-@@ -167,6 +168,8 @@ type EngineConfig struct {
+@@ -177,6 +178,8 @@ type EngineConfig struct {
  	// StateDir is the directory holding the state file. The sync response
  	// (network map) is serialized here on platforms that persist it to disk.
  	StateDir string
@@ -886,7 +886,7 @@ index f4f47992f..04d147f53 100644
  }
  
  // EngineServices holds the external service dependencies required by the Engine.
-@@ -1286,6 +1289,17 @@ func (e *Engine) updateConfig(conf *mgmProto.PeerConfig) error {
+@@ -1313,6 +1316,17 @@ func (e *Engine) updateConfig(conf *mgmProto.PeerConfig) error {
  		return ErrResetConnection
  	}
  
@@ -904,7 +904,7 @@ index f4f47992f..04d147f53 100644
  	if conf.GetSshConfig() != nil {
  		if err := e.updateSSH(conf.GetSshConfig()); err != nil {
  			log.Warnf("failed handling SSH server setup: %v", err)
-@@ -2102,13 +2116,14 @@ func (e *Engine) newWgIface() (*iface.WGIface, error) {
+@@ -2169,13 +2183,14 @@ func (e *Engine) newWgIface() (*iface.WGIface, error) {
  	}
  
  	opts := iface.WGIFaceOpts{
@@ -953,7 +953,7 @@ index 1c9c63f78..2ef517cc8 100644
    # Coturn
    coturn:
 diff --git a/management/Dockerfile.multistage b/management/Dockerfile.multistage
-index 619f84615..491c66ec3 100644
+index 5d037f1b1..800c65686 100644
 --- a/management/Dockerfile.multistage
 +++ b/management/Dockerfile.multistage
 @@ -5,11 +5,13 @@ WORKDIR /app
@@ -972,7 +972,7 @@ index 619f84615..491c66ec3 100644
  RUN apt update && apt install -y ca-certificates && rm -fr /var/cache/apt
  ENTRYPOINT [ "/go/bin/netbird-mgmt","management"]
 diff --git a/management/internals/shared/grpc/conversion.go b/management/internals/shared/grpc/conversion.go
-index 74ceb3370..bb092e73e 100644
+index 96bd9f1f4..68ac3e42c 100644
 --- a/management/internals/shared/grpc/conversion.go
 +++ b/management/internals/shared/grpc/conversion.go
 @@ -10,6 +10,7 @@ import (
@@ -983,15 +983,15 @@ index 74ceb3370..bb092e73e 100644
  	"google.golang.org/protobuf/types/known/timestamppb"
  
  	integrationsConfig "github.com/netbirdio/management-integrations/integrations/config"
-@@ -18,6 +19,7 @@ import (
+@@ -17,6 +18,7 @@ import (
+ 	"github.com/netbirdio/netbird/client/ssh/auth"
  
  	"github.com/netbirdio/netbird/management/internals/controllers/network_map/controller/cache"
- 	nbconfig "github.com/netbirdio/netbird/management/internals/server/config"
 +	"github.com/netbirdio/netbird/management/server/amneziawg"
- 	nbpeer "github.com/netbirdio/netbird/management/server/peer"
- 	"github.com/netbirdio/netbird/management/server/posture"
+ 	nbconfig "github.com/netbirdio/netbird/management/internals/server/config"
  	"github.com/netbirdio/netbird/management/server/types"
-@@ -28,12 +30,16 @@ import (
+ 	"github.com/netbirdio/netbird/shared/management/networkmap"
+@@ -27,12 +29,16 @@ import (
  
  const (
  	// deprecatedRemotePeersVersion is the version of Netbird that introduced the NetworkMap.RemotePeers field, deprecated in favor of RemotePeers.
@@ -1010,7 +1010,7 @@ index 74ceb3370..bb092e73e 100644
  
  func init() {
  	constraint, err := version.NewConstraint(">= " + deprecatedRemotePeersVersion)
-@@ -41,6 +47,12 @@ func init() {
+@@ -40,6 +46,12 @@ func init() {
  		panic("parse deprecated remote peers version constraint: " + err.Error())
  	}
  	precomputedDeprecatedRemotePeersConstraint = constraint
@@ -1023,7 +1023,7 @@ index 74ceb3370..bb092e73e 100644
  }
  
  // toNetbirdConfig converts the server configuration to the wire representation. It returns
-@@ -131,6 +143,44 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -130,6 +142,44 @@ func toPeerConfig(peer *nmdata.Peer, network *nmdata.Network, dnsName string, se
  		sshConfig.JwtConfig = buildJWTConfig(httpConfig, deviceFlowConfig)
  	}
  
@@ -1068,7 +1068,7 @@ index 74ceb3370..bb092e73e 100644
  	peerConfig := &proto.PeerConfig{
  		Address:                         fmt.Sprintf("%s/%d", peer.IP.String(), netmask),
  		SshConfig:                       sshConfig,
-@@ -141,6 +191,15 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -140,6 +190,15 @@ func toPeerConfig(peer *nmdata.Peer, network *nmdata.Network, dnsName string, se
  			Version:      settings.AutoUpdateVersion,
  			AlwaysUpdate: settings.AutoUpdateAlways,
  		},
@@ -1084,7 +1084,7 @@ index 74ceb3370..bb092e73e 100644
  	}
  
  	if peer.SupportsIPv6() && peer.IPv6.IsValid() && network.NetV6.IP != nil {
-@@ -154,6 +213,27 @@ func toPeerConfig(peer *nbpeer.Peer, network *types.Network, dnsName string, set
+@@ -153,6 +212,27 @@ func toPeerConfig(peer *nmdata.Peer, network *nmdata.Network, dnsName string, se
  	return peerConfig
  }
  
@@ -1109,7 +1109,7 @@ index 74ceb3370..bb092e73e 100644
 +	return peerVersion
 +}
 +
- func ToSyncResponse(ctx context.Context, config *nbconfig.Config, httpConfig *nbconfig.HttpServerConfig, deviceFlowConfig *nbconfig.DeviceAuthorizationFlow, peer *nbpeer.Peer, turnCredentials *Token, relayCredentials *Token, networkMap *types.NetworkMap, dnsName string, checks []*posture.Checks, dnsCache *cache.DNSConfigCache, settings *types.Settings, extraSettings *types.ExtraSettings, peerGroups []string, dnsFwdPort int64) *proto.SyncResponse {
+ func ToSyncResponse(ctx context.Context, config *nbconfig.Config, httpConfig *nbconfig.HttpServerConfig, deviceFlowConfig *nbconfig.DeviceAuthorizationFlow, peer *nmdata.Peer, turnCredentials *Token, relayCredentials *Token, networkMap *types.NetworkMap, dnsName string, checks []*nmdata.PostureChecks, dnsCache *cache.DNSConfigCache, settings *nmdata.AccountSettingsInfo, extraSettings *types.ExtraSettings, peerGroups []string, dnsFwdPort int64) *proto.SyncResponse {
  	// IPv6 data in AllowedIPs and SourcePrefixes wildcard expansion depends on
  	// whether the target peer supports IPv6. Routes and firewall rules are already
 diff --git a/management/server/amneziawg/amneziawg_env.go b/management/server/amneziawg/amneziawg_env.go
@@ -1288,10 +1288,10 @@ index 000000000..8a5a6d07b
 +	return os.Getenv(name) == "true"
 +}
 diff --git a/shared/management/proto/management.proto b/shared/management/proto/management.proto
-index 598f7a579..bf80649d3 100644
+index c3d75af11..546e3f565 100644
 --- a/shared/management/proto/management.proto
 +++ b/shared/management/proto/management.proto
-@@ -411,6 +411,9 @@ message PeerConfig {
+@@ -423,6 +423,9 @@ message PeerConfig {
  
    // IPv6 overlay address as compact bytes: 16 bytes IP + 1 byte prefix length.
    bytes address_v6 = 9;
@@ -1301,7 +1301,7 @@ index 598f7a579..bf80649d3 100644
  }
  
  message AutoUpdateSettings {
-@@ -1207,3 +1210,73 @@ message UserIDList {
+@@ -1241,3 +1244,73 @@ message UserIDList {
  message PeerIndexSet {
    repeated uint32 peer_indexes = 1;
  }
