@@ -8,7 +8,7 @@ Subject: [PATCH] Add CreateOutboundPacket method for direct packet injection
  1 file changed, 27 insertions(+)
 
 diff --git a/device/device.go b/device/device.go
-index 26c8ede..36ffad1 100644
+index 781a899..679e4cf 100644
 --- a/device/device.go
 +++ b/device/device.go
 @@ -6,6 +6,9 @@
@@ -21,7 +21,7 @@ index 26c8ede..36ffad1 100644
  	"runtime"
  	"sync"
  	"sync/atomic"
-@@ -585,3 +588,27 @@ func (device *Device) BindClose() error {
+@@ -588,3 +591,27 @@ func (device *Device) BindClose() error {
  	device.net.Unlock()
  	return err
  }

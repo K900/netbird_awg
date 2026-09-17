@@ -4,17 +4,17 @@ Date: Sat, 23 May 2026 17:53:12 +0900
 Subject: [PATCH] Make PreallocatedBuffersPerPool runtime-configurable (#14)
 
 ---
- device/device.go                 | 34 ++++++++++++++++++++++++--
+ device/device.go                 | 30 +++++++++++++++++++++--
  device/pool_size.go              | 41 ++++++++++++++++++++++++++++++++
  device/pools.go                  | 32 ++++++++++++++++++-------
  device/queueconstants_android.go | 15 +++++++-----
  device/queueconstants_default.go | 16 ++++++++-----
  device/queueconstants_windows.go | 16 ++++++++-----
- 6 files changed, 125 insertions(+), 29 deletions(-)
+ 6 files changed, 121 insertions(+), 29 deletions(-)
  create mode 100644 device/pool_size.go
 
 diff --git a/device/device.go b/device/device.go
-index 36ffad1..364b920 100644
+index 679e4cf..c39f7d2 100644
 --- a/device/device.go
 +++ b/device/device.go
 @@ -93,6 +93,12 @@ type Device struct {
@@ -30,7 +30,7 @@ index 36ffad1..364b920 100644
  	junk struct {
  		min   atomic.Uint32
  		max   atomic.Uint32
-@@ -341,6 +347,10 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
+@@ -344,6 +350,10 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
  	device.rate.limiter.Init()
  	device.indexTable.Init()
  
@@ -41,7 +41,7 @@ index 36ffad1..364b920 100644
  	rang.FromUint32(MessageInitiationType, MessageInitiationType)
  	device.headers.init.Store(rang)
  	rang.FromUint32(MessageResponseType, MessageResponseType)
-@@ -380,8 +394,12 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
+@@ -383,8 +393,12 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
  // BatchSize returns the BatchSize for the device as a whole which is the max of
  // the bind batch size and the tun batch size. The batch size reported by device
  // is the size used to construct memory pools, and is the allowed batch size for
@@ -55,7 +55,7 @@ index 36ffad1..364b920 100644
  	size := device.net.bind.BatchSize()
  	dSize := device.tun.device.BatchSize()
  	if size < dSize {
-@@ -390,6 +408,18 @@ func (device *Device) BatchSize() int {
+@@ -393,6 +407,18 @@ func (device *Device) BatchSize() int {
  	return size
  }
  
@@ -74,7 +74,7 @@ index 36ffad1..364b920 100644
  func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
  	device.peers.RLock()
  	defer device.peers.RUnlock()
-@@ -573,7 +603,7 @@ func (device *Device) BindUpdate() error {
+@@ -576,7 +602,7 @@ func (device *Device) BindUpdate() error {
  	device.net.stopping.Add(len(recvFns))
  	device.queue.decryption.wg.Add(len(recvFns)) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
  	device.queue.handshake.wg.Add(len(recvFns))  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
