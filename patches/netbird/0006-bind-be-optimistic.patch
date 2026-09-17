@@ -1,0 +1,171 @@
+commit 7a40123d76a52798f507f20e615924d32877a882
+Author: K900 <me@0upti.me>
+Date:   2026-09-17 22:07:46 +0300
+
+    bind: be optimistic
+
+diff --git a/client/iface/bind/ice_bind.go b/client/iface/bind/ice_bind.go
+index cd1ed12f1..35fe051d3 100644
+--- a/client/iface/bind/ice_bind.go
++++ b/client/iface/bind/ice_bind.go
+@@ -4,7 +4,6 @@ package bind
+ 
+ import (
+ 	"context"
+-	"encoding/binary"
+ 	"fmt"
+ 	"net"
+ 	"net/netip"
+@@ -273,10 +272,7 @@ func (s *ICEBind) createReceiverFn(pc wgConn.BatchReader, conn *net.UDPConn, rxO
+ 				continue
+ 			}
+ 			addrPort := msg.Addr.(*net.UDPAddr).AddrPort()
+-
+-			if isTransportPkg(msg.Buffers, msg.N) {
+-				s.activityRecorder.record(addrPort)
+-			}
++			s.activityRecorder.record(addrPort)
+ 
+ 			ep := &wgConn.StdNetEndpoint{AddrPort: addrPort} // TODO: remove allocation
+ 			wgConn.GetSrcFromControl(msg.OOB[:msg.NN], ep)
+@@ -324,7 +320,7 @@ func (s *ICEBind) filterOutStunMessages(buffers [][]byte, n int, addr net.Addr)
+ 		}
+ 		pkt := buffers[i][:n]
+ 
+-		if isWireGuardMsg(pkt) || !stun.IsMessage(pkt) {
++		if !stun.IsMessage(pkt) {
+ 			continue
+ 		}
+ 
+@@ -377,10 +373,8 @@ func (c *ICEBind) receiveRelayed(buffs [][]byte, sizes []int, eps []wgConn.Endpo
+ 		sizes[0] = len(msg.Buffer)
+ 		eps[0] = wgConn.Endpoint(msg.Endpoint)
+ 
+-		if isTransportPkg(buffs, sizes[0]) {
+-			if ep, ok := eps[0].(*Endpoint); ok {
+-				c.activityRecorder.record(ep.AddrPort)
+-			}
++		if ep, ok := eps[0].(*Endpoint); ok {
++			c.activityRecorder.record(ep.AddrPort)
+ 		}
+ 
+ 		return 1, nil
+@@ -398,35 +392,3 @@ func putMessages(msgs *[]ipv6.Message, msgsPool *sync.Pool) {
+ 	}
+ 	msgsPool.Put(msgs)
+ }
+-
+-// isWireGuardMsg reports whether the packet carries a WireGuard message header: a
+-// little-endian uint32 message type in the range 1..4, which leaves the three bytes
+-// after the type byte zero, in a packet long enough to hold any WireGuard message.
+-//
+-// A well formed STUN message cannot take that shape. Its length field sits in the two
+-// bytes the type must leave zero, and for a message of at least wgMinMsgSize bytes that
+-// field holds at least 12, so the two framings do not overlap. The test has to be this
+-// tight because stun.IsMessage only looks at the magic cookie, which in a WireGuard
+-// message overlaps the receiver index: a session whose index happens to equal the cookie
+-// would otherwise have all of its inbound data misrouted to the STUN handler until the
+-// next rekey.
+-func isWireGuardMsg(pkt []byte) bool {
+-	if len(pkt) < wgMinMsgSize {
+-		return false
+-	}
+-
+-	msgType := binary.LittleEndian.Uint32(pkt[:4])
+-	return msgType >= wgMsgTypeHandshakeInitiation && msgType <= wgMsgTypeTransport
+-}
+-
+-// isTransportPkg reports whether the packet is WireGuard transport data carrying a
+-// payload, which is what counts as peer activity. A keepalive holds no payload and is
+-// exactly wgMinMsgSize bytes.
+-func isTransportPkg(buffers [][]byte, n int) bool {
+-	if n < 4 || n > len(buffers[0]) {
+-		return false
+-	}
+-
+-	msgType := binary.LittleEndian.Uint32(buffers[0][:4])
+-	return msgType == wgMsgTypeTransport && n > wgMinMsgSize
+-}
+diff --git a/client/iface/bind/stun_filter_test.go b/client/iface/bind/stun_filter_test.go
+index 0e118e0fd..bccabd743 100644
+--- a/client/iface/bind/stun_filter_test.go
++++ b/client/iface/bind/stun_filter_test.go
+@@ -81,50 +81,6 @@ func TestFilterOutStunMessages_FiltersRealSTUNMessage(t *testing.T) {
+ 	assert.Empty(t, buffers[0], "consumed buffer must be emptied so WireGuard does not see it")
+ }
+ 
+-// TestIsWireGuardMsg_DisjointFromSTUN locks the invariant the filter relies on: a
+-// well formed STUN message long enough to be a WireGuard message always has a
+-// non-zero length field, so it cannot be mistaken for a WireGuard header.
+-func TestIsWireGuardMsg_DisjointFromSTUN(t *testing.T) {
+-	types := []stun.MessageType{
+-		stun.BindingRequest,
+-		stun.BindingSuccess,
+-		stun.BindingError,
+-		{Method: stun.MethodBinding, Class: stun.ClassIndication},
+-	}
+-
+-	for _, msgType := range types {
+-		// Long enough that the length guard is not what makes this pass.
+-		msg, err := stun.Build(msgType, stun.TransactionID,
+-			stun.NewUsername("remoteUfrag:localUfrag"), stun.Fingerprint)
+-		require.NoError(t, err)
+-		require.GreaterOrEqual(t, len(msg.Raw), wgMinMsgSize, "precondition: %s", msgType)
+-		assert.False(t, isWireGuardMsg(msg.Raw),
+-			"%s must not look like a WireGuard message", msgType)
+-	}
+-}
+-
+-func TestIsWireGuardMsg(t *testing.T) {
+-	tests := []struct {
+-		name string
+-		pkt  []byte
+-		want bool
+-	}{
+-		{"transport data", wgMsg(wgMsgTypeTransport, 128, nil), true},
+-		{"handshake initiation", wgMsg(wgMsgTypeHandshakeInitiation, 148, nil), true},
+-		{"unknown type 5", wgMsg(5, 128, nil), false},
+-		{"type 0", wgMsg(0, 128, nil), false},
+-		{"non-zero reserved byte", []byte{0x04, 0x00, 0x01, 0x00}, false},
+-		{"too short", []byte{0x04, 0x00, 0x00}, false},
+-		{"empty", nil, false},
+-	}
+-
+-	for _, tc := range tests {
+-		t.Run(tc.name, func(t *testing.T) {
+-			assert.Equal(t, tc.want, isWireGuardMsg(tc.pkt), "wrong classification for %s", tc.name)
+-		})
+-	}
+-}
+-
+ // TestFilterOutStunMessages_IgnoresBytesBeyondPacket guards against classifying on
+ // buffer contents left over from an earlier, longer packet.
+ func TestFilterOutStunMessages_IgnoresBytesBeyondPacket(t *testing.T) {
+@@ -173,27 +129,6 @@ func TestReceiveFn_ClearsSizeOfConsumedPacket(t *testing.T) {
+ 	assert.Zero(t, sizes[0], "consumed STUN packet must not leave a size behind for WireGuard")
+ }
+ 
+-func TestIsTransportPkg(t *testing.T) {
+-	tests := []struct {
+-		name string
+-		pkt  []byte
+-		n    int
+-		want bool
+-	}{
+-		{"transport data with payload", wgMsg(wgMsgTypeTransport, 128, nil), 128, true},
+-		{"keepalive", wgMsg(wgMsgTypeTransport, wgMinMsgSize, nil), wgMinMsgSize, false},
+-		{"handshake initiation", wgMsg(wgMsgTypeHandshakeInitiation, 148, nil), 148, false},
+-		{"stale type bytes beyond packet", wgMsg(wgMsgTypeTransport, 128, nil), 2, false},
+-	}
+-
+-	for _, tc := range tests {
+-		t.Run(tc.name, func(t *testing.T) {
+-			assert.Equal(t, tc.want, isTransportPkg(intoBuffer(tc.pkt), tc.n),
+-				"wrong activity classification for %s", tc.name)
+-		})
+-	}
+-}
+-
+ // TestFilterOutStunMessages_ConsumesSTUNWithWireGuardShapedType covers the one STUN
+ // encoding whose leading bytes collide with a WireGuard message type: method 0x080 as a
+ // request encodes to 0x0200, so the type byte reads as a handshake response and the byte
