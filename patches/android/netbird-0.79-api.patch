@@ -1,0 +1,39 @@
+diff --git a/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java b/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
+index 9bdd253..d5b68c3 100644
+--- a/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
++++ b/app/src/main/java/io/netbird/client/ui/advanced/AdvancedFragment.java
+@@ -311,7 +311,7 @@ public class AdvancedFragment extends Fragment implements ThemePickerSheet.OnThe
+         }
+         io.netbird.gomobile.android.Preferences preferences = new io.netbird.gomobile.android.Preferences(configFilePath);
+         try {
+-            return !preferences.getPreSharedKey().isEmpty();
++            return preferences.hasPreSharedKey();
+         } catch (Exception e) {
+             return false;
+         }
+diff --git a/app/src/main/java/io/netbird/client/ui/fistinstall/FirstInstallFragment.java b/app/src/main/java/io/netbird/client/ui/fistinstall/FirstInstallFragment.java
+index 6a4dc14..f8e4c9b 100644
+--- a/app/src/main/java/io/netbird/client/ui/fistinstall/FirstInstallFragment.java
++++ b/app/src/main/java/io/netbird/client/ui/fistinstall/FirstInstallFragment.java
+@@ -188,7 +188,7 @@ public class FirstInstallFragment extends Fragment {
+         setBusy(true);
+         Auth auth;
+         try {
+-            auth = Android.newAuth(configPath, managementUrl);
++            auth = Android.newAuth(configPath, managementUrl, null);
+         } catch (Exception e) {
+             Log.e(TAG, "Failed to create authenticator", e);
+             setBusy(false);
+diff --git a/app/src/main/java/io/netbird/client/ui/profile/ProfileEditorDialog.java b/app/src/main/java/io/netbird/client/ui/profile/ProfileEditorDialog.java
+index 47f3280..3e8cf91 100644
+--- a/app/src/main/java/io/netbird/client/ui/profile/ProfileEditorDialog.java
++++ b/app/src/main/java/io/netbird/client/ui/profile/ProfileEditorDialog.java
+@@ -357,7 +357,7 @@ public final class ProfileEditorDialog {
+         setChecking(true);
+         Auth auth;
+         try {
+-            auth = Android.newAuth(configPath, managementUrl);
++            auth = Android.newAuth(configPath, managementUrl, null);
+         } catch (Exception e) {
+             Log.e(TAG, "Failed to create authenticator", e);
+             setChecking(false);
