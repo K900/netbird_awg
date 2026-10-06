@@ -1,0 +1,183 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Maycon Santos <mlsmaycon@gmail.com>
+Date: Fri, 4 Sep 2026 20:49:57 +0200
+Subject: [PATCH] Make netTun.Close idempotent (#19)
+
+Close closes its channels unguarded, so a second call panics the process with
+close of closed channel rather than failing the one caller that raced.
+
+Nothing above this layer can promise a single call. Device.Close closes the
+device it was handed and is reached both from an ordinary teardown and from
+RoutineReadFromTUN, while embedders hold their own references and cannot
+coordinate. Guarding per instance above the tun, as netbird does with a
+sync.Once in its device filter, cannot stop two wrappers closing one tun.
+
+TestNetTunCloseTwice panics without this change. The concurrent test covers the
+teardown against RoutineReadFromTUN race, and the third checks the guard still
+closes the channels rather than skipping teardown.
+---
+ tun/netstack/tun.go            | 29 ++++++----
+ tun/netstack/tun_close_test.go | 97 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 116 insertions(+), 10 deletions(-)
+ create mode 100644 tun/netstack/tun_close_test.go
+
+diff --git a/tun/netstack/tun.go b/tun/netstack/tun.go
+index 6b31362..20c1ba4 100644
+--- a/tun/netstack/tun.go
++++ b/tun/netstack/tun.go
+@@ -20,6 +20,7 @@ import (
+ 	"runtime"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 
+@@ -49,6 +50,7 @@ type netTun struct {
+ 	mtu            int
+ 	dnsServers     []netip.Addr
+ 	hasV4, hasV6   bool
++	closeOnce      sync.Once
+ }
+ 
+ type Net netTun
+@@ -176,19 +178,26 @@ func (tun *netTun) WriteNotify() {
+ 	tun.incomingPacket <- view
+ }
+ 
++// Close tears the device down. It is safe to call more than once and from
++// several goroutines: callers above this layer hold their own references to the
++// device and cannot coordinate with each other, and Device.Close is also
++// reached from RoutineReadFromTUN, so a bare close of the channels here takes
++// the whole process down with a close of closed channel panic.
+ func (tun *netTun) Close() error {
+-	tun.stack.RemoveNIC(1)
+-	tun.stack.Close()
+-	tun.ep.RemoveNotify(tun.notifyHandle)
+-	tun.ep.Close()
++	tun.closeOnce.Do(func() {
++		tun.stack.RemoveNIC(1)
++		tun.stack.Close()
++		tun.ep.RemoveNotify(tun.notifyHandle)
++		tun.ep.Close()
+ 
+-	if tun.events != nil {
+-		close(tun.events)
+-	}
++		if tun.events != nil {
++			close(tun.events)
++		}
+ 
+-	if tun.incomingPacket != nil {
+-		close(tun.incomingPacket)
+-	}
++		if tun.incomingPacket != nil {
++			close(tun.incomingPacket)
++		}
++	})
+ 
+ 	return nil
+ }
+diff --git a/tun/netstack/tun_close_test.go b/tun/netstack/tun_close_test.go
+new file mode 100644
+index 0000000..6667f99
+--- /dev/null
++++ b/tun/netstack/tun_close_test.go
+@@ -0,0 +1,97 @@
++/* SPDX-License-Identifier: MIT
++ *
++ * Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
++ */
++
++package netstack
++
++import (
++	"net/netip"
++	"sync"
++	"testing"
++)
++
++func newTestTUN(t *testing.T) *netTun {
++	t.Helper()
++
++	dev, _, err := CreateNetTUN(
++		[]netip.Addr{netip.MustParseAddr("192.168.1.1")},
++		[]netip.Addr{netip.MustParseAddr("8.8.8.8")},
++		1280,
++	)
++	if err != nil {
++		t.Fatalf("create net TUN: %v", err)
++	}
++
++	tun, ok := dev.(*netTun)
++	if !ok {
++		t.Fatalf("CreateNetTUN returned %T, want *netTun", dev)
++	}
++	return tun
++}
++
++// TestNetTunCloseTwice covers the sequential case: Close must tolerate being
++// called again.
++//
++// Nothing above this layer can guarantee a single call. Device.Close closes the
++// device it was handed, and it is reached both from an ordinary teardown and
++// from RoutineReadFromTUN, while callers embedding the device keep their own
++// references. Without the guard the second call closes an already closed
++// channel and panics the process.
++func TestNetTunCloseTwice(t *testing.T) {
++	tun := newTestTUN(t)
++
++	if err := tun.Close(); err != nil {
++		t.Fatalf("first close: %v", err)
++	}
++	if err := tun.Close(); err != nil {
++		t.Fatalf("second close: %v", err)
++	}
++}
++
++// TestNetTunCloseConcurrent covers the case actually seen in the field: two
++// goroutines closing the same device at once, which is what a teardown racing
++// RoutineReadFromTUN looks like.
++func TestNetTunCloseConcurrent(t *testing.T) {
++	for i := 0; i < 50; i++ {
++		tun := newTestTUN(t)
++
++		const closers = 8
++		var start sync.WaitGroup
++		var done sync.WaitGroup
++		start.Add(1)
++		done.Add(closers)
++
++		for c := 0; c < closers; c++ {
++			go func() {
++				defer done.Done()
++				start.Wait()
++				_ = tun.Close()
++			}()
++		}
++
++		start.Done()
++		done.Wait()
++	}
++}
++
++// TestNetTunEventsClosedOnce checks that the guard still closes the channels
++// rather than skipping the teardown: the events channel must be closed after
++// Close returns, so readers observing it are released.
++func TestNetTunEventsClosedOnce(t *testing.T) {
++	tun := newTestTUN(t)
++
++	events := tun.Events()
++	if err := tun.Close(); err != nil {
++		t.Fatalf("close: %v", err)
++	}
++
++	// Drain whatever was already queued; the channel must then report closed
++	// rather than blocking, otherwise readers are never released.
++	for i := 0; i < 16; i++ {
++		if _, open := <-events; !open {
++			return
++		}
++	}
++	t.Fatal("events channel never reported closed after Close")
++}

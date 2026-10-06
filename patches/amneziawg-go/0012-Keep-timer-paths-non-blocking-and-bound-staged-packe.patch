@@ -1,0 +1,551 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zoltan Papp <zoltan.pmail@gmail.com>
+Date: Mon, 14 Sep 2026 14:31:47 +0200
+Subject: [PATCH] Keep timer paths non-blocking and bound staged packets per
+ peer, kernel style (#21)
+
+The keepalive deadlock fixed in #20 was one instance of a class the kernel
+module rules out by construction. This commit adopts the same two rules
+instead of working around the symptom.
+
+1. Nothing reached from a timer callback may wait. In the kernel the
+   callback runs in softirq: alloc_skb is GFP_ATOMIC and gives up, and
+   wg_queue_enqueue_per_device_and_peer fails with -ENOSPC/-EPIPE and the
+   packet is dropped or marked PACKET_STATE_DEAD. #20 made the keepalive
+   allocation non-blocking but left the rest of the path waiting: a
+   container allocation on the nonce-overflow branch and the two bounded
+   queue sends in SendStagedPackets. Any of them, parked while holding
+   the timer's runningLock, wedges Timer.DelSync and with it Peer.Stop,
+   RemovePeer and Device.Close. SendKeepalive now runs
+   sendStagedPackets(wait=false): a full pool or queue drops the batch;
+   if the sequential sender already holds the batch it is emptied and
+   unlocked so the sender passes over it. The public SendStagedPackets
+   keeps waiting, so the TUN reader keeps its backpressure.
+
+2. A peer holds at most MAX_STAGED_PACKETS (128) packets while waiting
+   for a handshake; wg_xmit drops the oldest before adding a batch. Our
+   staged queue was bounded in batches, not packets, and a GSO batch can
+   carry 128 packets, so one peer that never completes its handshake
+   could pin thousands of buffers and drain a capped pool for every other
+   peer. StagePackets now enforces the packet bound with a per-peer
+   counter, dropping the oldest batches first. That, not the handshake
+   retry policy, is how the kernel keeps a dead peer from hurting the
+   rest of the device.
+
+With the bound in place the handshakeAttempts change from #20 is not
+needed and is reverted: outbound traffic resets the counter again, as it
+does upstream and in wg_packet_send_queued_handshake_initiation, and
+SendHandshakeInitiation goes back to the upstream isRetry signature so
+these lines no longer diverge on merges.
+
+The revert also removes a problem that change introduced. It relied on
+the give-up branch of expiredRetransmitHandshake to release a dead
+peer's buffers, and that branch only runs after MaxTimerHandshakes
+failed retries - about 90 seconds. Until then the pool stayed drained,
+the TUN reader stayed parked and no peer on the device could send. And
+once the branch had run, nothing reset the counter again while traffic
+kept flowing: the next packet sent one initiation and re-armed the
+retransmit timer, which found the counter already past the limit and
+gave up after a single try, flushing the staged queue, deleting the
+keepalive timer and logging "giving up" every five seconds for as long
+as the peer was down and had traffic. Upstream and the kernel give each
+burst of new traffic a full 90-second budget instead, and now so do we.
+
+Tests: TestStagedSendKeepsHandshakeAttempts is replaced by
+TestStagedSendResetsHandshakeAttempts; TestStagePacketsBoundedPerPeer
+checks the packet bound and that dropped buffers return to the pool;
+TestSendKeepaliveWithFullOutboundQueue wedges the sequential sender and
+checks the keepalive still returns.
+---
+ device/constants.go       |   1 +
+ device/peer.go            |   7 +-
+ device/pool_block_test.go | 128 +++++++++++++++++++++++++----
+ device/receive.go         |   2 +-
+ device/send.go            | 168 +++++++++++++++++++++++++++-----------
+ device/timers.go          |   4 +-
+ 6 files changed, 242 insertions(+), 68 deletions(-)
+
+diff --git a/device/constants.go b/device/constants.go
+index bf8f81c..73bc763 100644
+--- a/device/constants.go
++++ b/device/constants.go
+@@ -38,4 +38,5 @@ const (
+ const (
+ 	UnderLoadAfterTime = time.Second // how long does the device remain under load after detected
+ 	MaxPeers           = 1 << 16     // maximum number of configured peers
++	MaxStagedPackets   = 128         // packets a peer may hold while waiting for a handshake; the kernel's MAX_STAGED_PACKETS
+ )
+diff --git a/device/peer.go b/device/peer.go
+index 2bcb16c..5dd65f6 100644
+--- a/device/peer.go
++++ b/device/peer.go
+@@ -49,9 +49,10 @@ type Peer struct {
+ 	}
+ 
+ 	queue struct {
+-		staged   chan *QueueOutboundElementsContainer // staged packets before a handshake is available
+-		outbound *autodrainingOutboundQueue           // sequential ordering of udp transmission
+-		inbound  *autodrainingInboundQueue            // sequential ordering of tun writing
++		staged        chan *QueueOutboundElementsContainer // staged packets before a handshake is available
++		stagedPackets atomic.Int32                         // packets in staged, kept near MaxStagedPackets by StagePackets
++		outbound      *autodrainingOutboundQueue           // sequential ordering of udp transmission
++		inbound       *autodrainingInboundQueue            // sequential ordering of tun writing
+ 	}
+ 
+ 	cookieGenerator             CookieGenerator
+diff --git a/device/pool_block_test.go b/device/pool_block_test.go
+index 8b30473..a02d94b 100644
+--- a/device/pool_block_test.go
++++ b/device/pool_block_test.go
+@@ -134,29 +134,127 @@ func TestSendKeepaliveWithExhaustedPool(t *testing.T) {
+ 	}
+ }
+ 
+-// TestStagedSendKeepsHandshakeAttempts guards the other half of the same
+-// failure: expiredRetransmitHandshake only gives up, and only then flushes the
+-// staged queue, once handshakeAttempts reaches MaxTimerHandshakes. Traffic for a
+-// peer that cannot handshake must not keep resetting that counter.
+-func TestStagedSendKeepsHandshakeAttempts(t *testing.T) {
+-	dev, peer := newCappedDevice(t, 64)
++// poolInUse reports how many buffers are checked out of a capped pool.
++func poolInUse(p *WaitPool) uint32 {
++	p.lock.Lock()
++	defer p.lock.Unlock()
++	return p.count
++}
++
++// stageBatch takes perBatch elements from the pools and stages them on peer.
++func stageBatch(t *testing.T, dev *Device, peer *Peer, perBatch int) {
++	t.Helper()
+ 
+-	elem, ok := dev.TryNewOutboundElement()
+-	if !ok {
+-		t.Fatal("pool exhausted before the test started")
+-	}
+ 	container, ok := dev.TryGetOutboundElementsContainer()
+ 	if !ok {
+-		t.Fatal("pool exhausted before the test started")
++		t.Fatal("container pool exhausted before the test started")
+ 	}
+-	container.elems = append(container.elems, elem)
+-	peer.queue.staged <- container
++	for i := 0; i < perBatch; i++ {
++		elem, ok := dev.TryNewOutboundElement()
++		if !ok {
++			t.Fatal("buffer pool exhausted before the test started")
++		}
++		container.elems = append(container.elems, elem)
++	}
++	peer.StagePackets(container)
++}
++
++// TestStagedSendResetsHandshakeAttempts pins the upstream and kernel rule that a
++// new outbound packet starts a fresh handshake budget. Recovering the buffers a
++// dead peer holds is StagePackets' job (see TestStagePacketsBoundedPerPeer), not
++// a reason to change the retry policy.
++func TestStagedSendResetsHandshakeAttempts(t *testing.T) {
++	dev, peer := newCappedDevice(t, 64)
++	stageBatch(t, dev, peer, 1)
+ 
+ 	peer.timers.handshakeAttempts.Store(3)
+ 	peer.SendStagedPackets()
+ 
+-	if got := peer.timers.handshakeAttempts.Load(); got != 3 {
+-		t.Fatalf("handshakeAttempts = %d, want 3: the data path must not reset the give-up counter", got)
++	if got := peer.timers.handshakeAttempts.Load(); got != 0 {
++		t.Fatalf("handshakeAttempts = %d, want 0: outbound traffic must reset the counter as upstream does", got)
++	}
++}
++
++// TestStagePacketsBoundedPerPeer checks the kernel's MAX_STAGED_PACKETS rule: a
++// peer with no session keeps at most MaxStagedPackets packets plus the batch
++// that pushed it over, whatever the batch size, and the batches it drops go
++// straight back to the pool.
++func TestStagePacketsBoundedPerPeer(t *testing.T) {
++	dev, peer := newCappedDevice(t, 4096)
++	peer.FlushStagedPackets()
++
++	const batches, perBatch = 40, 16
++	before := poolInUse(dev.pool.messageBuffers)
++	for b := 0; b < batches; b++ {
++		stageBatch(t, dev, peer, perBatch)
++	}
++
++	pinned := poolInUse(dev.pool.messageBuffers) - before
++	if pinned > MaxStagedPackets+perBatch {
++		t.Fatalf("staged queue pins %d buffers, want at most %d", pinned, MaxStagedPackets+perBatch)
++	}
++	if pinned < MaxStagedPackets {
++		t.Fatalf("staged queue pins %d buffers, want at least %d: the bound must not drop more than needed", pinned, MaxStagedPackets)
++	}
++	if got := peer.queue.stagedPackets.Load(); got < 0 || uint32(got) != pinned {
++		t.Fatalf("stagedPackets = %d, want %d: the counter must track the pool", got, pinned)
++	}
++
++	peer.FlushStagedPackets()
++	if after := poolInUse(dev.pool.messageBuffers); after != before {
++		t.Fatalf("%d buffers out after flush, want %d: staged buffers must return to the pool", after, before)
++	}
++	if got := peer.queue.stagedPackets.Load(); got != 0 {
++		t.Fatalf("stagedPackets = %d after flush, want 0", got)
++	}
++}
++
++// TestSendKeepaliveWithFullOutboundQueue covers the other place a keepalive
++// callback could park: handing its batch to the sequential sender. The sender
++// is wedged on a batch whose encryption never finishes, the queue behind it is
++// filled, and SendKeepalive must still return.
++func TestSendKeepaliveWithFullOutboundQueue(t *testing.T) {
++	pair := genTestPair(t, false)
++	pair.Send(t, Ping, nil)
++	pair.Send(t, Pong, nil)
++
++	dev := pair[0].dev
++	peer := dev.LookupPeer(onlyPeerKey(t, dev))
++
++	// Every container is locked, as a batch awaiting encryption would be, so
++	// the sender blocks on the first and the rest fill the queue. Unlocking
++	// them on the way out lets the sender drain before the device closes.
++	held := make([]*QueueOutboundElementsContainer, 0, QueueOutboundSize+1)
++	t.Cleanup(func() {
++		for _, c := range held {
++			c.Unlock()
++		}
++	})
++	for full := false; !full; {
++		c := dev.GetOutboundElementsContainer()
++		c.Lock()
++		select {
++		case peer.queue.outbound.c <- c:
++			held = append(held, c)
++		default:
++			c.Unlock()
++			dev.PutOutboundElementsContainer(c)
++			full = true
++		}
++	}
++
++	peer.FlushStagedPackets()
++
++	done := make(chan struct{})
++	go func() {
++		peer.SendKeepalive()
++		close(done)
++	}()
++
++	select {
++	case <-done:
++	case <-time.After(5 * time.Second):
++		t.Fatal("SendKeepalive blocked on a full outbound queue")
+ 	}
+ }
+ 
+diff --git a/device/receive.go b/device/receive.go
+index b34a25b..d1901f8 100644
+--- a/device/receive.go
++++ b/device/receive.go
+@@ -63,7 +63,7 @@ func (peer *Peer) keepKeyFreshReceiving() {
+ 
+ 	if keypair != nil && keypair.isInitiator && time.Since(keypair.created) > peer.device.keyRefreshTimeoutReceiving() {
+ 		peer.timers.sentLastMinuteHandshake.Store(true)
+-		peer.SendHandshakeInitiation(true)
++		peer.SendHandshakeInitiation(false)
+ 	}
+ }
+ 
+diff --git a/device/send.go b/device/send.go
+index 45efe94..166c28b 100644
+--- a/device/send.go
++++ b/device/send.go
+@@ -90,6 +90,25 @@ func (device *Device) TryNewOutboundElement() (*QueueOutboundElement, bool) {
+ 	return elem, true
+ }
+ 
++// outboundElementsContainer is GetOutboundElementsContainer when wait is true;
++// otherwise it is the Try variant and returns nil when the pool is at capacity.
++func (device *Device) outboundElementsContainer(wait bool) *QueueOutboundElementsContainer {
++	if wait {
++		return device.GetOutboundElementsContainer()
++	}
++	c, _ := device.TryGetOutboundElementsContainer()
++	return c
++}
++
++// putOutboundBatch returns a batch and its elements to the pools.
++func (device *Device) putOutboundBatch(c *QueueOutboundElementsContainer) {
++	for _, elem := range c.elems {
++		device.PutMessageBuffer(elem.buffer)
++		device.PutOutboundElement(elem)
++	}
++	device.PutOutboundElementsContainer(c)
++}
++
+ // clearPointers clears elem fields that contain pointers.
+ // This makes the garbage collector's life easier and
+ // avoids accidentally keeping other objects around unnecessarily.
+@@ -101,13 +120,16 @@ func (elem *QueueOutboundElement) clearPointers() {
+ 	elem.peer = nil
+ }
+ 
+-/* Queues a keepalive if no packets are queued for peer
++/* Queues a keepalive if no packets are queued for peer.
++ *
++ * Runs from timer callbacks, so nothing on its path may wait: see
++ * sendStagedPackets.
+  */
+ func (peer *Peer) SendKeepalive() {
+ 	if len(peer.queue.staged) == 0 && peer.isRunning.Load() {
+ 		peer.stageKeepalive()
+ 	}
+-	peer.SendStagedPackets()
++	peer.sendStagedPackets(false)
+ }
+ 
+ // stageKeepalive queues one keepalive packet, or gives up if the buffer pool is
+@@ -136,22 +158,20 @@ func (peer *Peer) stageKeepalive() {
+ 	elemsContainer.elems = append(elemsContainer.elems, elem)
+ 	select {
+ 	case peer.queue.staged <- elemsContainer:
++		peer.queue.stagedPackets.Add(1)
+ 		peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
+ 	default:
+-		peer.device.PutMessageBuffer(elem.buffer)
+-		peer.device.PutOutboundElement(elem)
+-		peer.device.PutOutboundElementsContainer(elemsContainer)
++		peer.device.putOutboundBatch(elemsContainer)
+ 	}
+ }
+ 
+ // SendHandshakeInitiation sends a handshake initiation, rate-limited to one per
+-// RekeyTimeout. resetAttempts clears the failed-attempt counter that
+-// expiredRetransmitHandshake reads to decide when to give up: pass true only
+-// when there is evidence the peer is reachable - a live keypair, a completed
+-// handshake, a peer whose timers just started - so the negotiation has earned
+-// a fresh budget of attempts. Outbound traffic alone is not such evidence.
+-func (peer *Peer) SendHandshakeInitiation(resetAttempts bool) error {
+-	if resetAttempts {
++// RekeyTimeout. A call that is not a retry starts a fresh negotiation and resets
++// the attempt counter expiredRetransmitHandshake uses to give up; a retry keeps
++// counting towards that limit. This matches the kernel's
++// wg_packet_send_queued_handshake_initiation.
++func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
++	if !isRetry {
+ 		peer.timers.handshakeAttempts.Store(0)
+ 		peer.timers.maxHandshakeAttempts.Store(peer.device.maxHandshakeAttemps())
+ 	}
+@@ -365,7 +385,7 @@ func (peer *Peer) keepKeyFreshSending() {
+ 	}
+ 	nonce := keypair.sendNonce.Load()
+ 	if nonce > RekeyAfterMessages || (keypair.isInitiator && time.Since(keypair.created) > peer.device.keyRefreshTimeoutSending()) {
+-		peer.SendHandshakeInitiation(true)
++		peer.SendHandshakeInitiation(false)
+ 	}
+ }
+ 
+@@ -484,26 +504,55 @@ func (device *Device) RoutineReadFromTUN() {
+ 	}
+ }
+ 
++// StagePackets queues a batch behind the peer's pending handshake. Like the
++// kernel's wg_xmit it keeps at most MaxStagedPackets packets per peer, dropping
++// the oldest to make room before the new batch goes in. Without the bound a
++// peer that never completes its handshake pins a whole batch per queue slot -
++// thousands of buffers with GSO-sized batches - and drains a capped pool for
++// every other peer on the device.
+ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
++	for peer.queue.stagedPackets.Load() > MaxStagedPackets {
++		if !peer.dropOldestStaged() {
++			break
++		}
++	}
+ 	for {
+ 		select {
+ 		case peer.queue.staged <- elems:
++			peer.queue.stagedPackets.Add(int32(len(elems.elems)))
+ 			return
+ 		default:
+ 		}
+-		select {
+-		case tooOld := <-peer.queue.staged:
+-			for _, elem := range tooOld.elems {
+-				peer.device.PutMessageBuffer(elem.buffer)
+-				peer.device.PutOutboundElement(elem)
+-			}
+-			peer.device.PutOutboundElementsContainer(tooOld)
+-		default:
+-		}
++		peer.dropOldestStaged()
+ 	}
+ }
+ 
++// dropOldestStaged discards the oldest staged batch, returning its buffers to
++// the pool. It reports false if nothing was staged.
++func (peer *Peer) dropOldestStaged() bool {
++	select {
++	case tooOld := <-peer.queue.staged:
++		peer.queue.stagedPackets.Add(-int32(len(tooOld.elems)))
++		peer.device.putOutboundBatch(tooOld)
++		return true
++	default:
++		return false
++	}
++}
++
++// SendStagedPackets hands the staged packets to the encryption and
++// transmission queues, waiting for room when they are full.
+ func (peer *Peer) SendStagedPackets() {
++	peer.sendStagedPackets(true)
++}
++
++// sendStagedPackets is SendStagedPackets with waiting optional. With wait false
++// nothing on the path blocks: a pool or queue that is full drops the batch, the
++// way the kernel drops when GFP_ATOMIC fails or the crypt ring refuses a packet.
++// Timer callbacks need this mode - they hold the timer's runningLock for the
++// whole call, and a callback parked on a pool or queue blocks Timer.DelSync, and
++// with it Peer.Stop, RemovePeer and Device.Close.
++func (peer *Peer) sendStagedPackets(wait bool) {
+ top:
+ 	if len(peer.queue.staged) == 0 || !peer.device.isUp() {
+ 		return
+@@ -511,11 +560,6 @@ top:
+ 
+ 	keypair := peer.keypairs.Current()
+ 	if keypair == nil || keypair.sendNonce.Load() >= RejectAfterMessages || time.Since(keypair.created) >= peer.device.keychainExpireTime() {
+-		// Do not reset the counter. Traffic for a peer with no usable keypair
+-		// keeps arriving while the peer is down, and resetting on every packet
+-		// keeps expiredRetransmitHandshake from ever reaching
+-		// MaxTimerHandshakes - the point at which it gives up, flushes the
+-		// staged queue and releases its buffers.
+ 		peer.SendHandshakeInitiation(false)
+ 		return
+ 	}
+@@ -524,6 +568,7 @@ top:
+ 		var elemsContainerOOO *QueueOutboundElementsContainer
+ 		select {
+ 		case elemsContainer := <-peer.queue.staged:
++			peer.queue.stagedPackets.Add(-int32(len(elemsContainer.elems)))
+ 			i := 0
+ 			for _, elem := range elemsContainer.elems {
+ 				elem.peer = peer
+@@ -531,7 +576,12 @@ top:
+ 				if elem.nonce >= RejectAfterMessages {
+ 					keypair.sendNonce.Store(RejectAfterMessages)
+ 					if elemsContainerOOO == nil {
+-						elemsContainerOOO = peer.device.GetOutboundElementsContainer()
++						elemsContainerOOO = peer.device.outboundElementsContainer(wait)
++					}
++					if elemsContainerOOO == nil {
++						peer.device.PutMessageBuffer(elem.buffer)
++						peer.device.PutOutboundElement(elem)
++						continue
+ 					}
+ 					elemsContainerOOO.elems = append(elemsContainerOOO.elems, elem)
+ 					continue
+@@ -556,14 +606,9 @@ top:
+ 
+ 			// add to parallel and sequential queue
+ 			if peer.isRunning.Load() {
+-				peer.queue.outbound.c <- elemsContainer
+-				peer.device.queue.encryption.c <- elemsContainer
++				peer.enqueueOutbound(elemsContainer, wait)
+ 			} else {
+-				for _, elem := range elemsContainer.elems {
+-					peer.device.PutMessageBuffer(elem.buffer)
+-					peer.device.PutOutboundElement(elem)
+-				}
+-				peer.device.PutOutboundElementsContainer(elemsContainer)
++				peer.device.putOutboundBatch(elemsContainer)
+ 			}
+ 
+ 			if elemsContainerOOO != nil {
+@@ -575,18 +620,41 @@ top:
+ 	}
+ }
+ 
+-func (peer *Peer) FlushStagedPackets() {
+-	for {
+-		select {
+-		case elemsContainer := <-peer.queue.staged:
+-			for _, elem := range elemsContainer.elems {
+-				peer.device.PutMessageBuffer(elem.buffer)
+-				peer.device.PutOutboundElement(elem)
+-			}
+-			peer.device.PutOutboundElementsContainer(elemsContainer)
+-		default:
+-			return
++// enqueueOutbound hands a nonce-assigned batch to the sequential sender and
++// then to the encryption workers. With wait false a full queue drops the batch
++// instead. If the sender already holds it, the batch is emptied and unlocked so
++// the sender passes over it - the kernel marks such a packet PACKET_STATE_DEAD
++// for the same reason.
++func (peer *Peer) enqueueOutbound(elemsContainer *QueueOutboundElementsContainer, wait bool) {
++	if wait {
++		peer.queue.outbound.c <- elemsContainer
++		peer.device.queue.encryption.c <- elemsContainer
++		return
++	}
++	select {
++	case peer.queue.outbound.c <- elemsContainer:
++	default:
++		peer.device.log.Verbosef("%v - Dropping %d packets, outbound queue full", peer, len(elemsContainer.elems))
++		peer.device.putOutboundBatch(elemsContainer)
++		return
++	}
++	select {
++	case peer.device.queue.encryption.c <- elemsContainer:
++	default:
++		peer.device.log.Verbosef("%v - Dropping %d packets, encryption queue full", peer, len(elemsContainer.elems))
++		for i, elem := range elemsContainer.elems {
++			peer.device.PutMessageBuffer(elem.buffer)
++			peer.device.PutOutboundElement(elem)
++			elemsContainer.elems[i] = nil
+ 		}
++		elemsContainer.elems = elemsContainer.elems[:0]
++		elemsContainer.Unlock()
++	}
++}
++
++// FlushStagedPackets drops every staged packet and returns its buffers.
++func (peer *Peer) FlushStagedPackets() {
++	for peer.dropOldestStaged() {
+ 	}
+ }
+ 
+@@ -753,8 +821,14 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
+ 			device.PutOutboundElementsContainer(elemsContainer)
+ 			continue
+ 		}
+-		dataSent := false
+ 		elemsContainer.Lock()
++		if len(elemsContainer.elems) == 0 {
++			// enqueueOutbound emptied the batch because the encryption queue was
++			// full: nothing to send, and no timer to touch.
++			device.PutOutboundElementsContainer(elemsContainer)
++			continue
++		}
++		dataSent := false
+ 		for _, elem := range elemsContainer.elems {
+ 			if !elem.isKeepalive {
+ 				dataSent = true
+diff --git a/device/timers.go b/device/timers.go
+index 890c96b..4a5499d 100644
+--- a/device/timers.go
++++ b/device/timers.go
+@@ -105,7 +105,7 @@ func expiredRetransmitHandshake(peer *Peer, d time.Duration) {
+ 		/* We clear the endpoint address src address, in case this is the cause of trouble. */
+ 		peer.markEndpointSrcForClearing()
+ 
+-		peer.SendHandshakeInitiation(false)
++		peer.SendHandshakeInitiation(true)
+ 	}
+ }
+ 
+@@ -123,7 +123,7 @@ func expiredNewHandshake(peer *Peer, d time.Duration) {
+ 	peer.device.log.Verbosef("%s - Retrying handshake because we stopped hearing back after %d seconds", peer, int(d.Seconds()))
+ 	/* We clear the endpoint address src address, in case this is the cause of trouble. */
+ 	peer.markEndpointSrcForClearing()
+-	peer.SendHandshakeInitiation(true)
++	peer.SendHandshakeInitiation(false)
+ }
+ 
+ func expiredZeroKeyMaterial(peer *Peer, d time.Duration) {
