@@ -37,7 +37,7 @@ index 000000000..4344e4146
 +	GetDisableCookies() bool
 +}
 diff --git a/client/iface/configurer/usp.go b/client/iface/configurer/usp.go
-index 334d99369..af58eb4e3 100644
+index 334d99369..c176f80de 100644
 --- a/client/iface/configurer/usp.go
 +++ b/client/iface/configurer/usp.go
 @@ -45,15 +45,17 @@ type WGUSPConfigurer struct {
@@ -271,10 +271,10 @@ index 334d99369..af58eb4e3 100644
 +		sb.WriteString(fmt.Sprintf("header_protection_key=%s\n", hex.EncodeToString(val[:])))
 +	}
 +	if val := conf.GetRandomTrailers(); val {
-+		sb.WriteString("random_trailers=1")
++		sb.WriteString("random_trailers=1\n")
 +	}
 +	if val := conf.GetDisableCookies(); val {
-+		sb.WriteString("disable_cookies=1")
++		sb.WriteString("disable_cookies=1\n")
 +	}
 +}
 +
